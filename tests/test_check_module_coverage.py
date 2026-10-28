@@ -7,22 +7,6 @@ from typing import Any
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check-module-coverage.py"
-STRICT = (95.0, 90.0)
-STANDARD = (80.0, 70.0)
-PLANNED_THRESHOLDS = {
-    "anonymize": STRICT,
-    "verify": STRICT,
-    "naming": STRICT,
-    "queue": STRICT,
-    "audio": STANDARD,
-    "transcribe": STANDARD,
-    "prepare": STANDARD,
-    "draft": STANDARD,
-    "publish": STANDARD,
-    "notify": STANDARD,
-    "cleanup": STANDARD,
-    "pipeline": STANDARD,
-}
 
 
 @pytest.fixture(scope="module")
@@ -170,11 +154,27 @@ def test_missing_coverage_report_is_an_error(checker: ModuleType, tmp_path: Path
     assert checker.main(["--coverage", str(tmp_path / "absent.json")]) == 2
 
 
-def test_shipped_threshold_files_are_well_formed(checker: ModuleType) -> None:
-    shipped = {
-        path.stem: checker.load_threshold(path)
-        for path in (SCRIPT.parents[1] / "ci" / "coverage-thresholds").glob("*.toml")
-    }
+PLANNED_THRESHOLDS = {
+    "anonymize": (95.0, 90.0),
+    "verify": (95.0, 90.0),
+    "naming": (95.0, 90.0),
+    "queue": (95.0, 90.0),
+    "audio": (80.0, 70.0),
+    "transcribe": (80.0, 70.0),
+    "prepare": (80.0, 70.0),
+    "draft": (80.0, 70.0),
+    "publish": (80.0, 70.0),
+    "notify": (80.0, 70.0),
+    "cleanup": (80.0, 70.0),
+    "pipeline": (80.0, 70.0),
+}
 
-    assert {"naming", "queue"} <= set(shipped)
-    assert shipped == {module: PLANNED_THRESHOLDS[module] for module in shipped}
+
+def test_shipped_threshold_files_are_well_formed(checker: ModuleType) -> None:
+    thresholds = sorted((SCRIPT.parents[1] / "ci" / "coverage-thresholds").glob("*.toml"))
+    stems = [path.stem for path in thresholds]
+
+    assert {"naming", "queue"} <= set(stems)
+    assert set(stems) <= set(PLANNED_THRESHOLDS)
+    for path in thresholds:
+        assert checker.load_threshold(path) == PLANNED_THRESHOLDS[path.stem]
