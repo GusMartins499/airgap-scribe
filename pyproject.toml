@@ -21,6 +21,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/airgap_scribe"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"data/names/first-names.txt" = "airgap_scribe/data/names/first-names.txt"
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
