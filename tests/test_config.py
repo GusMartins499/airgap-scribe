@@ -10,6 +10,7 @@ from airgap_scribe.config import (
     container_config_toml,
     load_config,
     load_container_config,
+    load_local_config,
     write_container_config,
 )
 
@@ -360,3 +361,65 @@ def test_container_loader_requires_models_dir(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match=r"'paths.models_dir'"):
         load_container_config(path)
+
+
+LOCAL_SECTIONS = {
+    **without("publish", "notify"),
+    "paths": 'models_dir = "/srv/models"',
+}
+
+
+def test_local_config_needs_neither_publish_nor_notify_nor_a_data_dir(tmp_path: Path) -> None:
+    config = load_local_config(write_config(tmp_path, LOCAL_SECTIONS))
+
+    assert config.publish is None
+    assert config.notify is None
+    assert config.paths.data_dir is None
+    assert config.paths.models_dir == Path("/srv/models")
+    assert config.kinds == ("talk", "discussion")
+
+
+def test_local_config_still_loads_publish_and_notify_when_present(tmp_path: Path) -> None:
+    config = load_local_config(write_config(tmp_path))
+
+    assert config.publish is not None
+    assert config.notify is not None
+    assert config.paths.models_dir == tmp_path / "data" / "models"
+
+
+def test_local_config_requires_models_dir_without_a_data_dir(tmp_path: Path) -> None:
+    sections = {**LOCAL_SECTIONS, "paths": ""}
+
+    with pytest.raises(ConfigError, match=r"'paths.models_dir'"):
+        load_local_config(write_config(tmp_path, sections))
+
+
+@pytest.mark.parametrize("section", ["transcription", "anonymization", "drafting", "container"])
+def test_local_config_still_requires_the_processing_sections(tmp_path: Path, section: str) -> None:
+    names = (section, "drafting.prompts") if section == "drafting" else (section,)
+    sections = {name: body for name, body in LOCAL_SECTIONS.items() if name not in names}
+
+    with pytest.raises(ConfigError, match=f"missing required config key '{section}'"):
+        load_local_config(write_config(tmp_path, sections))
+
+
+def test_local_config_rejects_unknown_sections(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"unknown config key.*'extras'"):
+        load_local_config(write_config(tmp_path, LOCAL_SECTIONS, extras='a = "b"'))
+
+
+def test_host_config_rejects_a_config_meant_only_for_try(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"missing required config key 'paths.data_dir'"):
+        load_config(write_config(tmp_path, LOCAL_SECTIONS))
+
+
+def test_the_shipped_try_example_config_is_valid_for_try_only() -> None:
+    path = REPO_ROOT / "examples" / "try.example.toml"
+
+    config = load_local_config(path)
+
+    assert config.kinds == ("talk",)
+    assert config.drafting is not None
+    assert config.drafting.prompts["talk"].is_file()
+    with pytest.raises(ConfigError):
+        load_config(path)
