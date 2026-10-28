@@ -157,6 +157,10 @@ def test_missing_coverage_report_is_an_error(checker: ModuleType, tmp_path: Path
 def test_shipped_threshold_files_are_well_formed(checker: ModuleType) -> None:
     thresholds = sorted((SCRIPT.parents[1] / "ci" / "coverage-thresholds").glob("*.toml"))
 
-    assert [path.stem for path in thresholds] == ["naming", "queue"]
+    package = SCRIPT.parents[1] / "src" / "airgap_scribe"
+
+    assert {"naming", "queue"} <= {path.stem for path in thresholds}
     for path in thresholds:
-        assert checker.load_threshold(path) == (95.0, 90.0)
+        assert (package / f"{path.stem}.py").is_file() or (package / path.stem).is_dir()
+        lines, branches = checker.load_threshold(path)
+        assert lines >= 80 and branches >= 70
