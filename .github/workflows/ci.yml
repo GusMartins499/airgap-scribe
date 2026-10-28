@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  SPACY_MODEL: pt_core_news_lg
+  SPACY_MODEL_VERSION: "3.8.0"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Cache spaCy model
+        id: spacy-model-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/spacy-models
+          key: spacy-${{ env.SPACY_MODEL }}-${{ env.SPACY_MODEL_VERSION }}
+
+      - name: Download spaCy model
+        if: steps.spacy-model-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.cache/spacy-models
+          curl --fail --location --silent --show-error \
+            --output ~/.cache/spacy-models/${SPACY_MODEL}-${SPACY_MODEL_VERSION}-py3-none-any.whl \
+            "https://github.com/explosion/spacy-models/releases/download/${SPACY_MODEL}-${SPACY_MODEL_VERSION}/${SPACY_MODEL}-${SPACY_MODEL_VERSION}-py3-none-any.whl"
+
+      - name: Install spaCy model
+        run: |
+          uv pip install ~/.cache/spacy-models/${SPACY_MODEL}-${SPACY_MODEL_VERSION}-py3-none-any.whl
+          uv run --no-sync python -c "import spacy, sys; sys.exit(0 if spacy.util.is_package('${SPACY_MODEL}') else 1)"
+
+      - name: Forbid sensitive files
+        run: git ls-files -z | xargs -0 --no-run-if-empty scripts/forbid-sensitive-files.sh
+
+      - name: Lint
+        run: uv run --no-sync ruff check
+
+      - name: Check formatting
+        run: uv run --no-sync ruff format --check
+
+      - name: Test
+        run: uv run --no-sync pytest
+
+      - name: Coverage gates
+        run: >
+          uv run --no-sync python scripts/check-module-coverage.py
+          --coverage coverage.json
+          --thresholds ci/coverage-thresholds
+          --total-lines 85
+          --total-branches 80
