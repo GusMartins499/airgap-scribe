@@ -4,5 +4,6 @@
 !README.md
 !LICENSE
 !src/
+!data/names/first-names.txt
 **/__pycache__
 **/*.py[cod]

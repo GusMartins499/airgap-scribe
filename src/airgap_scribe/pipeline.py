@@ -1,9 +1,11 @@
 import datetime
 import json
 import os
+import shutil
 import subprocess
 import sys
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 
 from airgap_scribe.config import Config, write_container_config
@@ -13,12 +15,13 @@ from airgap_scribe.notify import notify_failure, notify_success
 from airgap_scribe.publish import publish
 from airgap_scribe.queue import Queue
 from airgap_scribe.verify import Alert
-from airgap_scribe.workdir import ALERTS, CONTAINER_CONFIG
+from airgap_scribe.workdir import ALERTS, CONTAINER_CONFIG, DRAFT, TRANSCRIPT_ANON, TRANSCRIPT_RAW
 
 CONTAINER_WORK = "/work"
 CONTAINER_INPUT = "/input"
 CONTAINER_MODELS = "/models"
 OUTPUT_TAIL = 2000
+TRY_INPUT_DIR = "input"
 
 
 class PipelineError(Exception):
@@ -36,6 +39,16 @@ class StageFailedError(Exception):
         self.stage = stage
 
 
+@dataclass(frozen=True)
+class TryResult:
+    work_dir: Path
+    transcript_raw: Path
+    transcript_anon: Path
+    draft: Path
+    alerts_file: Path
+    alerts: list[Alert]
+
+
 def run_one(meeting: MeetingFile, config: Config) -> None:
     queue = _queue(config)
     queue.ensure_layout()
@@ -49,13 +62,11 @@ def run_one(meeting: MeetingFile, config: Config) -> None:
     stage = "prepare"
     try:
         work_dir = queue.work_dir(claimed)
-        write_container_config(config, work_dir / CONTAINER_CONFIG)
-        _run_container("prepare", prepare_command(claimed, work_dir, queue, config))
+        run_prepare(claimed, queue.processing, work_dir, config)
         stage = "draft"
         write_draft(work_dir, claimed, config)
         stage = "verify"
-        _run_container("verify", verify_command(work_dir, config))
-        alerts = read_alerts(work_dir / ALERTS)
+        alerts = run_verify(work_dir, config)
         stage = "publish"
         publication = publish(work_dir, claimed, alerts, config)
         stage = "notify"
@@ -97,6 +108,43 @@ def scan(config: Config) -> None:
         raise PipelineError(f"{len(failed)} recording(s) failed: {', '.join(failed)}")
 
 
+def try_one(audio: Path, kind: str, work_dir: Path, config: Config) -> TryResult:
+    if kind not in config.kinds:
+        raise PipelineError(f"unknown meeting kind '{kind}'")
+    input_dir = work_dir / TRY_INPUT_DIR
+    input_dir.mkdir(parents=True, exist_ok=True)
+    copied = input_dir / audio.name
+    shutil.copyfile(audio, copied)
+    meeting = MeetingFile(
+        path=copied,
+        date=datetime.date.today(),
+        kind=kind,
+        stem=audio.stem,
+        transcript=None,
+    )
+    run_prepare(meeting, input_dir, work_dir, config)
+    write_draft(work_dir, meeting, config)
+    alerts = run_verify(work_dir, config)
+    return TryResult(
+        work_dir=work_dir,
+        transcript_raw=work_dir / TRANSCRIPT_RAW,
+        transcript_anon=work_dir / TRANSCRIPT_ANON,
+        draft=work_dir / DRAFT,
+        alerts_file=work_dir / ALERTS,
+        alerts=alerts,
+    )
+
+
+def run_prepare(meeting: MeetingFile, input_dir: Path, work_dir: Path, config: Config) -> None:
+    write_container_config(config, work_dir / CONTAINER_CONFIG)
+    _run_container("prepare", prepare_command(meeting, work_dir, input_dir, config))
+
+
+def run_verify(work_dir: Path, config: Config) -> list[Alert]:
+    _run_container("verify", verify_command(work_dir, config))
+    return read_alerts(work_dir / ALERTS)
+
+
 def container_base_command() -> list[str]:
     return [
         "docker",
@@ -110,14 +158,14 @@ def container_base_command() -> list[str]:
 
 
 def prepare_command(
-    meeting: MeetingFile, work_dir: Path, queue: Queue, config: Config
+    meeting: MeetingFile, work_dir: Path, input_dir: Path, config: Config
 ) -> list[str]:
     command = [
         *container_base_command(),
         "-v",
         f"{work_dir}:{CONTAINER_WORK}",
         "-v",
-        f"{queue.processing}:{CONTAINER_INPUT}:ro",
+        f"{input_dir}:{CONTAINER_INPUT}:ro",
         "-v",
         f"{config.paths.models_dir}:{CONTAINER_MODELS}:ro",
         _image(config),

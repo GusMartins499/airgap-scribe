@@ -88,12 +88,21 @@ class Config:
 
 
 def load_config(path: Path) -> Config:
+    return _load_host_config(path, local=False)
+
+
+def load_local_config(path: Path) -> Config:
+    return _load_host_config(path, local=True)
+
+
+def _load_host_config(path: Path, local: bool) -> Config:
     root = _read(path)
     paths = root.table("paths")
-    data_dir = paths.path("data_dir")
+    data_dir = paths.optional_path("data_dir") if local else paths.path("data_dir")
+    models_default = _MISSING if data_dir is None else data_dir / "models"
     paths_settings = PathsSettings(
         data_dir=data_dir,
-        models_dir=paths.path("models_dir", default=data_dir / "models"),
+        models_dir=paths.path("models_dir", default=models_default),
     )
     paths.close()
     config = Config(
@@ -102,8 +111,8 @@ def load_config(path: Path) -> Config:
         anonymization=_anonymization(root),
         verify=_verify(root),
         drafting=_drafting(root),
-        publish=_publish(root),
-        notify=_notify(root),
+        publish=_publish(root, required=not local),
+        notify=_notify(root, required=not local),
         container=_container(root),
     )
     root.close()
@@ -211,8 +220,10 @@ def _drafting(root: "_Table") -> DraftingSettings:
     return DraftingSettings(command=command, prompts=prompts)
 
 
-def _publish(root: "_Table") -> PublishSettings:
-    table = root.table("publish")
+def _publish(root: "_Table", required: bool) -> PublishSettings | None:
+    table = root.table("publish", required=required)
+    if table is None:
+        return None
     settings = PublishSettings(
         repo_dir=table.path("repo_dir"),
         base_branch=table.string("base_branch", non_empty=True),
@@ -224,8 +235,10 @@ def _publish(root: "_Table") -> PublishSettings:
     return settings
 
 
-def _notify(root: "_Table") -> NotifySettings:
-    table = root.table("notify")
+def _notify(root: "_Table", required: bool) -> NotifySettings | None:
+    table = root.table("notify", required=required)
+    if table is None:
+        return None
     settings = NotifySettings(
         server=table.string("server", non_empty=True),
         topic_env=table.string("topic_env", non_empty=True),
@@ -296,6 +309,12 @@ class _Table:
         if non_empty and not value:
             raise ConfigError(f"'{self._qualified(key)}' must not be empty")
         return tuple(value)
+
+    def optional_path(self, key: str) -> Path | None:
+        if key not in self._values:
+            self._seen.add(key)
+            return None
+        return self.path(key)
 
     def path(self, key: str, default: Path = _MISSING) -> Path:
         if key not in self._values and default is not _MISSING:

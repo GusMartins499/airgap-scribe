@@ -182,3 +182,120 @@ def test_module_entry_point_runs_the_cli(
 
     assert exit_info.value.code == 0
     assert "airgap-scribe" in capsys.readouterr().out
+
+
+TRY_EXAMPLE_CONFIG = REPO_ROOT / "examples" / "try.example.toml"
+
+
+def fake_try_result(work_dir: Path, alert_count: int) -> pipeline.TryResult:
+    return pipeline.TryResult(
+        work_dir=work_dir,
+        transcript_raw=work_dir / "transcript.raw.txt",
+        transcript_anon=work_dir / "transcript.anon.txt",
+        draft=work_dir / "draft.md",
+        alerts_file=work_dir / "alerts.json",
+        alerts=[Alert(line=1, token="Synthname", reason="common-first-name")] * alert_count,
+    )
+
+
+@pytest.fixture
+def audio_file(tmp_path: Path) -> Path:
+    path = tmp_path / "Voice memo 12.m4a"
+    path.write_bytes(b"synthetic audio")
+    return path
+
+
+def test_try_prints_every_output_path_the_alert_count_and_a_raw_warning(
+    tmp_path: Path,
+    audio_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    out_dir = tmp_path / "out"
+    recorder = Recorder(fake_try_result(out_dir, 2))
+    monkeypatch.setattr(pipeline, "try_one", recorder)
+
+    code = cli.main(
+        ["try", str(audio_file), "--config", str(TRY_EXAMPLE_CONFIG), "--out", str(out_dir)]
+    )
+
+    assert code == 0
+    [(audio, kind, work_dir, config)] = recorder.calls
+    assert (audio, kind, work_dir) == (audio_file, "talk", out_dir)
+    assert config.publish is None
+    output = capsys.readouterr().out
+    for name in ("transcript.raw.txt", "transcript.anon.txt", "draft.md", "alerts.json"):
+        assert str(out_dir / name) in output
+    assert "(2 alert(s))" in output
+    assert "warning: transcript.raw.txt contains real names" in output
+    assert "Synthname" not in output
+
+
+def test_try_defaults_to_a_timestamped_dir_under_the_current_directory(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = Recorder(fake_try_result(tmp_path, 0))
+    monkeypatch.setattr(pipeline, "try_one", recorder)
+    monkeypatch.chdir(tmp_path)
+
+    cli.main(["try", str(audio_file), "--config", str(TRY_EXAMPLE_CONFIG)])
+
+    work_dir = recorder.calls[0][2]
+    assert work_dir.parent == tmp_path / "airgap-scribe-try"
+    assert work_dir.name.startswith("Voice memo 12-")
+
+
+def test_try_passes_the_requested_kind(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = Recorder(fake_try_result(tmp_path, 0))
+    monkeypatch.setattr(pipeline, "try_one", recorder)
+
+    cli.main(["try", str(audio_file), "--config", str(EXAMPLE_CONFIG), "--kind", "other"])
+
+    assert recorder.calls[0][1] == "other"
+
+
+def test_try_rejects_a_missing_audio_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recorder = Recorder()
+    monkeypatch.setattr(pipeline, "try_one", recorder)
+
+    code = cli.main(["try", str(tmp_path / "absent.m4a"), "--config", str(TRY_EXAMPLE_CONFIG)])
+
+    assert code == cli.EXIT_USAGE
+    assert recorder.calls == []
+    assert "audio file not found" in capsys.readouterr().err
+
+
+def test_try_reports_a_processing_failure_with_a_failure_code(
+    tmp_path: Path,
+    audio_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def failing_try(*args: Any) -> None:
+        raise pipeline.ContainerError("container step 'prepare' exited with status 4")
+
+    monkeypatch.setattr(pipeline, "try_one", failing_try)
+
+    code = cli.main(
+        ["try", str(audio_file), "--config", str(TRY_EXAMPLE_CONFIG), "--out", str(tmp_path)]
+    )
+
+    assert code == cli.EXIT_FAILURE
+    assert "try failed: container step 'prepare'" in capsys.readouterr().err
+
+
+def test_try_requires_a_config(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["try", "recording.m4a"])
+
+    assert "--config" in capsys.readouterr().err
+
+
+def test_host_pipeline_commands_reject_the_try_only_config(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["scan", "--config", str(TRY_EXAMPLE_CONFIG)]) == cli.EXIT_USAGE
