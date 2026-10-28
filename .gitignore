@@ -239,3 +239,4 @@ ggml-*
 *.env
 !*.env.example
 coverage.json
+airgap-scribe-try/

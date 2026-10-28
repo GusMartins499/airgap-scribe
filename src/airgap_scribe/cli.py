@@ -1,13 +1,17 @@
 import argparse
+import datetime
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from airgap_scribe import cleanup, pipeline, prepare, verify
-from airgap_scribe.config import ConfigError, load_config, load_container_config
+from airgap_scribe.config import ConfigError, load_config, load_container_config, load_local_config
+from airgap_scribe.draft import DraftError
 from airgap_scribe.naming import parse_meeting_file
 
+EXIT_FAILURE = 1
 EXIT_USAGE = 2
+TRY_OUTPUT_ROOT = "airgap-scribe-try"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +45,15 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser = commands.add_parser("scan", help="process every pending recording (host)")
     scan_parser.add_argument("--config", type=Path, required=True)
     scan_parser.set_defaults(handler=_scan)
+
+    try_parser = commands.add_parser(
+        "try", help="process any audio file into a local folder, without publishing (host)"
+    )
+    try_parser.add_argument("audio", type=Path)
+    try_parser.add_argument("--config", type=Path, required=True)
+    try_parser.add_argument("--kind")
+    try_parser.add_argument("--out", type=Path)
+    try_parser.set_defaults(handler=_try)
 
     cleanup_parser = commands.add_parser("cleanup", help="remove work data of merged drafts (host)")
     cleanup_parser.add_argument("--config", type=Path, required=True)
@@ -87,6 +100,31 @@ def _run(args: argparse.Namespace) -> int:
 def _scan(args: argparse.Namespace) -> int:
     pipeline.scan(load_config(args.config))
     return 0
+
+
+def _try(args: argparse.Namespace) -> int:
+    config = load_local_config(args.config)
+    if not args.audio.is_file():
+        print(f"airgap-scribe: audio file not found: {args.audio}", file=sys.stderr)
+        return EXIT_USAGE
+    kind = args.kind or config.kinds[0]
+    out_dir = args.out or _default_try_dir(args.audio)
+    try:
+        result = pipeline.try_one(args.audio, kind, out_dir.absolute(), config)
+    except (pipeline.PipelineError, pipeline.ContainerError, DraftError) as error:
+        print(f"airgap-scribe: try failed: {error}", file=sys.stderr)
+        return EXIT_FAILURE
+    print(f"raw transcript:        {result.transcript_raw}")
+    print(f"anonymized transcript: {result.transcript_anon}")
+    print(f"draft:                 {result.draft}")
+    print(f"alerts:                {result.alerts_file} ({len(result.alerts)} alert(s))")
+    print(f"warning: {result.transcript_raw.name} contains real names; delete it after reading.")
+    return 0
+
+
+def _default_try_dir(audio: Path) -> Path:
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return Path.cwd() / TRY_OUTPUT_ROOT / f"{audio.stem}-{timestamp}"
 
 
 def _cleanup(args: argparse.Namespace) -> int:

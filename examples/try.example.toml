@@ -1,0 +1,24 @@
+[paths]
+models_dir = "~/airgap-scribe-data/models"
+
+[transcription]
+whisper_model = "ggml-large-v3-turbo-q5_0.bin"
+language = "pt"
+initial_prompt = ""
+threads = 8
+
+[anonymization]
+spacy_model = "pt_core_news_lg"
+labels = ["PER", "LOC"]
+
+[verify]
+ignore = []
+
+[drafting]
+command = ["claude", "-p", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"]
+
+[drafting.prompts]
+talk = "prompts/example-talk.md"
+
+[container]
+image = "airgap-scribe:local"
