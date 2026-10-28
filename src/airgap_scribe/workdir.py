@@ -1,0 +1,8 @@
+AUDIO_WAV = "audio.wav"
+TRANSCRIPT_RAW = "transcript.raw.txt"
+TRANSCRIPT_ANON = "transcript.anon.txt"
+ENTITIES = "entities.json"
+MAPPING = "mapping.json"
+DRAFT = "draft.md"
+ALERTS = "alerts.json"
+CONTAINER_CONFIG = "container.toml"

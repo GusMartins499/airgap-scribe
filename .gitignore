@@ -218,3 +218,24 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# airgap-scribe: raw data and models must never be committed
+*.m4a
+*.mp3
+*.opus
+*.ogg
+*.aac
+*.wav
+*.flac
+*.txt
+!tests/**/*.txt
+!data/**/*.txt
+work/
+models/
+*.bin
+*.gguf
+ggml-*
+.env
+*.env
+!*.env.example
+coverage.json

@@ -1,0 +1,35 @@
+[paths]
+data_dir = "~/airgap-scribe-data"
+
+[transcription]
+whisper_model = "ggml-large-v3-turbo-q5_0.bin"
+language = "pt"
+initial_prompt = "Vocabulary hints for the domain of the meetings."
+threads = 8
+
+[anonymization]
+spacy_model = "pt_core_news_lg"
+labels = ["PER", "LOC"]
+
+[verify]
+ignore = []
+
+[drafting]
+command = ["claude", "-p", "--tools", ""]
+
+[drafting.prompts]
+talk = "prompts/example-talk.md"
+
+[publish]
+repo_dir = "~/www/content-site"
+base_branch = "main"
+content_dir = "src/content/posts"
+branch_prefix = "draft/"
+preview_url_template = "https://{branch_slug}.example.pages.dev"
+
+[notify]
+server = "https://ntfy.sh"
+topic_env = "AIRGAP_SCRIBE_NTFY_TOPIC"
+
+[container]
+image = "ghcr.io/gusmartins499/airgap-scribe:0.1.0"
