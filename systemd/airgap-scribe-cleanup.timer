@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the airgap-scribe cleanup daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30min
+Unit=airgap-scribe-cleanup.service
+
+[Install]
+WantedBy=timers.target
