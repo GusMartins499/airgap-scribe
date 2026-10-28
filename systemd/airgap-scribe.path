@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the airgap-scribe inbox for new recordings
+
+[Path]
+PathChanged=%h/airgap-scribe-data/inbox
+Unit=airgap-scribe.service
+
+[Install]
+WantedBy=default.target
