@@ -154,9 +154,27 @@ def test_missing_coverage_report_is_an_error(checker: ModuleType, tmp_path: Path
     assert checker.main(["--coverage", str(tmp_path / "absent.json")]) == 2
 
 
+PLANNED_THRESHOLDS = {
+    "anonymize": (95.0, 90.0),
+    "verify": (95.0, 90.0),
+    "naming": (95.0, 90.0),
+    "queue": (95.0, 90.0),
+    "audio": (80.0, 70.0),
+    "transcribe": (80.0, 70.0),
+    "prepare": (80.0, 70.0),
+    "draft": (80.0, 70.0),
+    "publish": (80.0, 70.0),
+    "notify": (80.0, 70.0),
+    "cleanup": (80.0, 70.0),
+    "pipeline": (80.0, 70.0),
+}
+
+
 def test_shipped_threshold_files_are_well_formed(checker: ModuleType) -> None:
     thresholds = sorted((SCRIPT.parents[1] / "ci" / "coverage-thresholds").glob("*.toml"))
+    stems = [path.stem for path in thresholds]
 
-    assert [path.stem for path in thresholds] == ["naming", "queue"]
+    assert {"naming", "queue"} <= set(stems)
+    assert set(stems) <= set(PLANNED_THRESHOLDS)
     for path in thresholds:
-        assert checker.load_threshold(path) == (95.0, 90.0)
+        assert checker.load_threshold(path) == PLANNED_THRESHOLDS[path.stem]
