@@ -12,7 +12,14 @@ from host_config import make_config, prepend_path, write_executable
 from airgap_scribe import pipeline
 from airgap_scribe.config import Config
 from airgap_scribe.naming import MeetingFile, parse_meeting_file
-from airgap_scribe.pipeline import PipelineError, StageFailedError, run_one, scan
+from airgap_scribe.pipeline import (
+    ContainerError,
+    PipelineError,
+    StageFailedError,
+    run_one,
+    scan,
+    try_one,
+)
 from airgap_scribe.publish import Publication
 from airgap_scribe.queue import Queue
 from airgap_scribe.verify import Alert
@@ -418,3 +425,91 @@ def test_a_config_without_container_section_fails_the_prepare_stage(
         run_one(drop(config, "2026-11-09_talk.m4a"), config)
 
     assert raised.value.stage == "prepare"
+
+
+def try_audio(tmp_path: Path, name: str = "any recording.mp3") -> Path:
+    audio = tmp_path / "downloads" / name
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(b"synthetic audio")
+    return audio
+
+
+def test_try_one_runs_prepare_on_a_copy_of_any_audio_file(
+    config: Config, docker: FakeDocker, host: HostDoubles, tmp_path: Path
+) -> None:
+    audio = try_audio(tmp_path)
+    work_dir = tmp_path / "try-out"
+
+    try_one(audio, "talk", work_dir, config)
+
+    assert audio.is_file()
+    assert (work_dir / "input" / "any recording.mp3").read_bytes() == b"synthetic audio"
+    prepare_call = docker.calls()[0]
+    assert prepare_call[:6] == [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
+    ]
+    assert f"{work_dir}:/work" in prepare_call
+    assert f"{work_dir / 'input'}:/input:ro" in prepare_call
+    assert f"{config.paths.models_dir}:/models:ro" in prepare_call
+    assert prepare_call[prepare_call.index("--input") + 1] == "/input/any recording.mp3"
+    assert "--transcript" not in prepare_call
+    assert (work_dir / CONTAINER_CONFIG).is_file()
+
+
+def test_try_one_drafts_and_verifies_in_the_output_dir(
+    config: Config, docker: FakeDocker, host: HostDoubles, tmp_path: Path
+) -> None:
+    work_dir = tmp_path / "try-out"
+
+    result = try_one(try_audio(tmp_path), "talk", work_dir, config)
+
+    [(draft_work_dir, meeting, _)] = host.draft.calls
+    assert draft_work_dir == work_dir
+    assert (meeting.kind, meeting.stem) == ("talk", "any recording")
+    verify_call = docker.calls()[1]
+    assert "verify" in verify_call
+    assert verify_call.count("-v") == 1
+    assert result.work_dir == work_dir
+    assert result.transcript_raw == work_dir / "transcript.raw.txt"
+    assert result.transcript_anon == work_dir / TRANSCRIPT_ANON
+    assert result.draft == work_dir / DRAFT
+    assert result.alerts_file == work_dir / ALERTS
+    assert result.alerts == [Alert(line=4, token="Example", reason="common-first-name")]
+
+
+def test_try_one_never_touches_the_queue_publish_or_notify(
+    config: Config, docker: FakeDocker, host: HostDoubles, tmp_path: Path
+) -> None:
+    local = replace(config, publish=None, notify=None, paths=replace(config.paths, data_dir=None))
+
+    try_one(try_audio(tmp_path), "talk", tmp_path / "try-out", local)
+
+    assert host.publish.calls == []
+    assert host.notify_success.calls == []
+    assert host.notify_failure.calls == []
+    queue = Queue(config.paths.data_dir)
+    assert list(queue.work.iterdir()) == []
+    assert list(queue.done.iterdir()) == []
+
+
+def test_try_one_rejects_an_unknown_kind_before_running_anything(
+    config: Config, docker: FakeDocker, host: HostDoubles, tmp_path: Path
+) -> None:
+    with pytest.raises(PipelineError, match="unknown meeting kind 'lecture'"):
+        try_one(try_audio(tmp_path), "lecture", tmp_path / "try-out", config)
+
+    assert docker.calls() == []
+
+
+def test_try_one_reports_a_failing_container_step(
+    config: Config, docker: FakeDocker, host: HostDoubles, tmp_path: Path
+) -> None:
+    docker.fail_on.write_text("verify")
+
+    with pytest.raises(ContainerError, match="container step 'verify'"):
+        try_one(try_audio(tmp_path), "talk", tmp_path / "try-out", config)
