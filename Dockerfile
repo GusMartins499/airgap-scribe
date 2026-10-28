@@ -52,6 +52,7 @@ COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --locked --no-dev --no-install-project
 
 COPY src ./src
+COPY data/names/first-names.txt ./data/names/first-names.txt
 RUN uv sync --locked --no-dev --no-editable
 
 ADD --checksum=sha256:${SPACY_MODEL_SHA256} \
