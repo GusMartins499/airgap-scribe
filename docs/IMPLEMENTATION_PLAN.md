@@ -150,7 +150,7 @@ server = "https://ntfy.sh"
 topic_env = "AIRGAP_SCRIBE_NTFY_TOPIC"
 
 [container]
-image = "ghcr.io/gusmartins499/airgap-scribe:0.1.0"
+image = "ghcr.io/gusmartins499/airgap-scribe:0.1.1"
 ```
 Secrets (the ntfy topic) come from environment variables, loaded by systemd from `~/.config/airgap-scribe/env`.
 
