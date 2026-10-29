@@ -12,7 +12,7 @@ for file in "$@"; do
   name="${file##*/}"
   lower="${name,,}"
   case "$lower" in
-    *.m4a | *.mp3 | *.opus | *.ogg | *.aac | *.wav | *.flac)
+    *.m4a | *.mp4 | *.mp3 | *.opus | *.ogg | *.aac | *.wav | *.flac)
       reject "$file" "audio"
       continue
       ;;

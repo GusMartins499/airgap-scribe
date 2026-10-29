@@ -165,7 +165,7 @@ class MeetingFile:
     transcript: Path | None   # sibling "<stem>.txt" when present
 def parse_meeting_file(path: Path, kinds: Iterable[str]) -> MeetingFile | None
 ```
-Accepted: `YYYY-MM-DD_<kind>.<ext>`, ext in m4a, mp3, opus, ogg, aac, wav (case-insensitive), kind in config. Invalid dates, unknown kinds, Syncthing temp files (`.syncthing.*.tmp`, `~syncthing~*`) and anything else return `None`.
+Accepted: `YYYY-MM-DD_<kind>.<ext>`, ext in m4a, mp4, mp3, opus, ogg, aac, wav (case-insensitive), kind in config. Invalid dates, unknown kinds, Syncthing temp files (`.syncthing.*.tmp`, `~syncthing~*`) and anything else return `None`.
 
 ### queue.py
 ```python

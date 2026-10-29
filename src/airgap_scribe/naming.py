@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-AUDIO_EXTENSIONS = frozenset({"m4a", "mp3", "opus", "ogg", "aac", "wav"})
+AUDIO_EXTENSIONS = frozenset({"m4a", "mp4", "mp3", "opus", "ogg", "aac", "wav"})
 TRANSCRIPT_EXTENSION = ".txt"
 
 _MEETING_FILE_NAME = re.compile(

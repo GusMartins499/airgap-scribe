@@ -21,7 +21,7 @@ def test_parses_date_kind_and_stem_from_a_valid_name(tmp_path: Path) -> None:
     assert meeting.transcript is None
 
 
-@pytest.mark.parametrize("extension", ["m4a", "mp3", "opus", "ogg", "aac", "wav"])
+@pytest.mark.parametrize("extension", ["m4a", "mp4", "mp3", "opus", "ogg", "aac", "wav"])
 def test_accepts_every_supported_audio_extension(tmp_path: Path, extension: str) -> None:
     assert parse_meeting_file(tmp_path / f"2026-01-31_talk.{extension}", KINDS) is not None
 

@@ -19,6 +19,7 @@ def check(*files: str) -> subprocess.CompletedProcess[str]:
     "path",
     [
         "recording.m4a",
+        "WhatsApp Audio 2026-10-28.mp4",
         "inbox/2026-11-09_talk.MP3",
         "a/b/clip.opus",
         "clip.ogg",
