@@ -221,6 +221,7 @@ __marimo__/
 
 # airgap-scribe: raw data and models must never be committed
 *.m4a
+*.mp4
 *.mp3
 *.opus
 *.ogg
