@@ -59,7 +59,7 @@ scripts/
   check-module-coverage.py
 ci/coverage-thresholds/<module>.toml      one file per module: lines = N, branches = N
 .github/workflows/ci.yml
-.github/workflows/image.yml
+.github/workflows/release.yml
 examples/
   pipeline.example.toml
   airgap-scribe.env.example
@@ -280,7 +280,7 @@ For each done record whose PR is merged (`gh pr view <url> --json state`), delet
 2. Runtime: `python:3.12-slim`, `ffmpeg`, the `whisper-cli` binary, the package installed with its dependencies, the spaCy model baked in. Non-root user. `ENTRYPOINT ["airgap-scribe"]`.
 The whisper model is NOT in the image; it is mounted read-only at `/models`. `scripts/download-whisper-model.sh` downloads it on the host.
 
-`.github/workflows/image.yml`: on tags `v*`, build and push to `ghcr.io/<owner>/airgap-scribe:<version>`.
+`.github/workflows/release.yml`: after CI passes on `main`, if the `pyproject.toml` version has no `v<version>` tag yet, build and push `ghcr.io/<owner>/airgap-scribe:<version>`, then create the tag and a GitHub release with generated notes. Releasing = bumping the version in a pull request.
 
 ## Testing and coverage
 

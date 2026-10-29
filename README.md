@@ -90,6 +90,12 @@ opens a pull request in a content repository for human review.
   recording to `failed/` with `<stem>.error.txt`; move it back to `inbox/` to retry.
   `airgap-scribe run <file> --config <config>` processes one recording by hand.
 
+## Releasing
+
+Bump `version` in `pyproject.toml` in a pull request. Once it is merged and CI passes on
+`main`, the image `ghcr.io/gusmartins499/airgap-scribe:<version>`, the `v<version>` tag and the
+GitHub release are created automatically.
+
 ## Privacy
 
 Raw audio and transcripts never leave the machine: every step that reads them runs with
