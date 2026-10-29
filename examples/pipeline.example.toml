@@ -15,7 +15,7 @@ labels = ["PER", "LOC"]
 ignore = []
 
 [drafting]
-command = ["claude", "-p", "--tools", ""]
+command = ["claude", "-p", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"]
 
 [drafting.prompts]
 talk = "prompts/example-talk.md"
