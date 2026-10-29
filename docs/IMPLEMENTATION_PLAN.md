@@ -133,7 +133,7 @@ spacy_model = "pt_core_news_lg"
 labels = ["PER", "LOC"]
 
 [drafting]
-command = ["claude", "-p", "--tools", ""]        # exact flags validated during implementation
+command = ["claude", "-p", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"]
 [drafting.prompts]                                # keys are the allowed meeting kinds
 talk = "prompts/talk.md"
 circle = "prompts/circle.md"
