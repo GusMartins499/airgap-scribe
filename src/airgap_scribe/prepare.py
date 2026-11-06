@@ -5,6 +5,8 @@ from pathlib import Path
 from airgap_scribe import anonymize, audio, transcribe, workdir
 from airgap_scribe.config import Config
 
+PARTIAL_WAV = "audio.partial.wav"
+
 
 class PrepareError(Exception):
     pass
@@ -17,9 +19,12 @@ def prepare(input_audio: Path, transcript: Path | None, work_dir: Path, config: 
         if not transcript.is_file():
             raise PrepareError(f"provided transcript not found: {transcript}")
         shutil.copyfile(transcript, raw_transcript)
-    else:
+    elif not raw_transcript.is_file():
         wav = work_dir / workdir.AUDIO_WAV
-        audio.to_wav(input_audio, wav)
+        if not wav.is_file():
+            partial_wav = wav.with_name(PARTIAL_WAV)
+            audio.to_wav(input_audio, partial_wav)
+            partial_wav.replace(wav)
         settings = config.transcription
         transcribe.transcribe(
             wav,

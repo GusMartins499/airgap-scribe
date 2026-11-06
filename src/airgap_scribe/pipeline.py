@@ -1,9 +1,12 @@
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +14,7 @@ from pathlib import Path
 from airgap_scribe.config import Config, write_container_config
 from airgap_scribe.draft import write_draft
 from airgap_scribe.naming import MeetingFile
-from airgap_scribe.notify import notify_failure, notify_success
+from airgap_scribe.notify import notify_failure, notify_resumed, notify_success
 from airgap_scribe.publish import publish
 from airgap_scribe.queue import Queue
 from airgap_scribe.verify import Alert
@@ -20,8 +23,14 @@ from airgap_scribe.workdir import ALERTS, CONTAINER_CONFIG, DRAFT, TRANSCRIPT_AN
 CONTAINER_WORK = "/work"
 CONTAINER_INPUT = "/input"
 CONTAINER_MODELS = "/models"
+CONTAINER_STEPS = ("prepare", "verify")
 OUTPUT_TAIL = 2000
 TRY_INPUT_DIR = "input"
+STALL_SECONDS = 30 * 60
+POLL_SECONDS = 5
+REMOVE_TIMEOUT_SECONDS = 60
+
+_INVALID_NAME_CHARACTERS = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
 class PipelineError(Exception):
@@ -55,7 +64,7 @@ def run_one(meeting: MeetingFile, config: Config) -> None:
     if queue.is_done(meeting.stem):
         return
     try:
-        claimed = queue.claim(meeting)
+        claimed = meeting if meeting.path.parent == queue.processing else queue.claim(meeting)
     except Exception as error:
         _notify_failure_safely(meeting.stem, "claim", type(error).__name__, config)
         raise StageFailedError(meeting.stem, "claim") from error
@@ -94,18 +103,47 @@ def scan(config: Config) -> None:
     queue.ensure_layout()
     attempted: set[str] = set()
     failed: list[str] = []
-    while True:
-        remaining = [item for item in queue.pending(config.kinds) if item.stem not in attempted]
-        if not remaining:
-            break
-        item = remaining[0]
-        attempted.add(item.stem)
-        try:
-            run_one(item, config)
-        except StageFailedError as error:
-            failed.append(f"{error.stem} ({error.stage})")
+    with queue.lock():
+        for item in queue.interrupted(config.kinds):
+            attempted.add(item.stem)
+            _resume(queue, item, config, failed)
+        while True:
+            remaining = [item for item in queue.pending(config.kinds) if item.stem not in attempted]
+            if not remaining:
+                break
+            item = remaining[0]
+            attempted.add(item.stem)
+            _run_and_collect(item, config, failed)
     if failed:
         raise PipelineError(f"{len(failed)} recording(s) failed: {', '.join(failed)}")
+
+
+def run_file(meeting: MeetingFile, config: Config) -> None:
+    queue = _queue(config)
+    queue.ensure_layout()
+    with queue.lock():
+        run_one(meeting, config)
+
+
+def _resume(queue: Queue, item: MeetingFile, config: Config, failed: list[str]) -> None:
+    work_dir = queue.work / item.stem
+    for step in CONTAINER_STEPS:
+        _remove_container(container_name(step, work_dir))
+    try:
+        notify_resumed(item.stem, config)
+    except Exception as notify_error:
+        print(
+            f"airgap-scribe: could not send the resume notification: {notify_error}",
+            file=sys.stderr,
+        )
+    _run_and_collect(item, config, failed)
+
+
+def _run_and_collect(item: MeetingFile, config: Config, failed: list[str]) -> None:
+    try:
+        run_one(item, config)
+    except StageFailedError as error:
+        failed.append(f"{error.stem} ({error.stage})")
 
 
 def try_one(audio: Path, kind: str, work_dir: Path, config: Config) -> TryResult:
@@ -137,19 +175,25 @@ def try_one(audio: Path, kind: str, work_dir: Path, config: Config) -> TryResult
 
 def run_prepare(meeting: MeetingFile, input_dir: Path, work_dir: Path, config: Config) -> None:
     write_container_config(config, work_dir / CONTAINER_CONFIG)
-    _run_container("prepare", prepare_command(meeting, work_dir, input_dir, config))
+    _run_container("prepare", prepare_command(meeting, work_dir, input_dir, config), work_dir)
 
 
 def run_verify(work_dir: Path, config: Config) -> list[Alert]:
-    _run_container("verify", verify_command(work_dir, config))
+    _run_container("verify", verify_command(work_dir, config), work_dir)
     return read_alerts(work_dir / ALERTS)
 
 
-def container_base_command() -> list[str]:
+def container_name(step: str, work_dir: Path) -> str:
+    return f"airgap-scribe-{step}-" + _INVALID_NAME_CHARACTERS.sub("-", work_dir.name)
+
+
+def container_base_command(name: str) -> list[str]:
     return [
         "docker",
         "run",
         "--rm",
+        "--name",
+        name,
         "--network",
         "none",
         "--user",
@@ -161,7 +205,7 @@ def prepare_command(
     meeting: MeetingFile, work_dir: Path, input_dir: Path, config: Config
 ) -> list[str]:
     command = [
-        *container_base_command(),
+        *container_base_command(container_name("prepare", work_dir)),
         "-v",
         f"{work_dir}:{CONTAINER_WORK}",
         "-v",
@@ -181,7 +225,7 @@ def prepare_command(
 
 def verify_command(work_dir: Path, config: Config) -> list[str]:
     return [
-        *container_base_command(),
+        *container_base_command(container_name("verify", work_dir)),
         "-v",
         f"{work_dir}:{CONTAINER_WORK}",
         _image(config),
@@ -204,16 +248,56 @@ def read_alerts(path: Path) -> list[Alert]:
     ]
 
 
-def _run_container(step: str, command: list[str]) -> None:
+def _run_container(step: str, command: list[str], work_dir: Path) -> None:
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr:
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=stderr, text=True)
+        except FileNotFoundError as error:
+            raise ContainerError("docker is not installed or not on PATH") from error
+        last_progress = time.time()
+        while True:
+            try:
+                returncode = process.wait(timeout=POLL_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                last_progress = max(last_progress, _latest_change(work_dir))
+                if time.time() - last_progress >= STALL_SECONDS:
+                    _remove_container(container_name(step, work_dir))
+                    process.kill()
+                    process.wait()
+                    raise ContainerError(
+                        f"container step '{step}' made no progress for "
+                        f"{STALL_SECONDS // 60} minute(s) and was stopped"
+                    ) from None
+        if returncode != 0:
+            stderr.seek(0)
+            raise ContainerError(
+                f"container step '{step}' exited with status {returncode}\n"
+                f"{stderr.read()[-OUTPUT_TAIL:]}"
+            )
+
+
+def _latest_change(work_dir: Path) -> float:
+    latest = 0.0
+    for path in work_dir.rglob("*"):
+        try:
+            latest = max(latest, path.stat().st_mtime)
+        except FileNotFoundError:
+            continue
+    return latest
+
+
+def _remove_container(name: str) -> None:
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-    except FileNotFoundError as error:
-        raise ContainerError("docker is not installed or not on PATH") from error
-    if result.returncode != 0:
-        raise ContainerError(
-            f"container step '{step}' exited with status {result.returncode}\n"
-            f"{result.stderr[-OUTPUT_TAIL:]}"
+        subprocess.run(
+            ["docker", "rm", "--force", name],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=REMOVE_TIMEOUT_SECONDS,
         )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return
 
 
 def _handle_failure(

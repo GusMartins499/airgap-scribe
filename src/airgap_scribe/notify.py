@@ -55,6 +55,18 @@ def notify_failure(meeting_stem: str, stage: str, error: str, config: Config) ->
     )
 
 
+def notify_resumed(meeting_stem: str, config: Config) -> None:
+    _post(
+        _settings(config),
+        "A previous run stopped before finishing. Processing resumes from the saved work.",
+        {
+            "Title": f"Resuming: {meeting_stem}",
+            "Tags": "repeat",
+            "Priority": "default",
+        },
+    )
+
+
 def summarize_error(error: str) -> str:
     lines = error.strip().splitlines()
     first_line = lines[0].strip() if lines else "unknown error"

@@ -1,3 +1,4 @@
+import fcntl
 import json
 from pathlib import Path
 
@@ -195,3 +196,28 @@ def test_done_records_are_returned_sorted_with_their_paths(queue: Queue) -> None
 
 def test_done_records_is_empty_without_a_done_directory(tmp_path: Path) -> None:
     assert Queue(tmp_path / "missing").done_records() == []
+
+
+def test_interrupted_lists_recordings_left_in_processing_that_are_not_done(queue: Queue) -> None:
+    (queue.processing / "2026-11-09_talk.m4a").write_text("synthetic")
+    (queue.processing / "2026-11-02_talk.m4a").write_text("synthetic")
+    (queue.processing / "notes.m4a").write_text("synthetic")
+    queue.done_record_path("2026-11-02_talk").write_text("{}")
+
+    interrupted = queue.interrupted(KINDS)
+
+    assert [item.path for item in interrupted] == [queue.processing / "2026-11-09_talk.m4a"]
+
+
+def test_interrupted_is_empty_when_processing_does_not_exist(tmp_path: Path) -> None:
+    assert Queue(tmp_path / "missing").interrupted(KINDS) == []
+
+
+def test_lock_is_exclusive_while_held_and_released_afterwards(queue: Queue) -> None:
+    lock_file = queue.data_dir / ".lock"
+
+    with queue.lock(), lock_file.open("a") as other, pytest.raises(BlockingIOError):
+        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    with lock_file.open("a") as other:
+        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)

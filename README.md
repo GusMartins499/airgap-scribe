@@ -64,7 +64,9 @@ opens a pull request in a content repository for human review.
 - Configure: copy `examples/pipeline.example.toml` to `~/.config/airgap-scribe/pipeline.toml`
   and a prompt from `examples/prompts/`. `[paths] data_dir` holds `inbox/`, `processing/`,
   `done/`, `failed/`, `work/` and `models/`; `[publish]` points at the content repository;
-  `[container] image` is the image to run.
+  `[container] image` is the image to run. `[transcription] threads` must not exceed the CPUs
+  the container can use (with Docker Desktop, the CPUs given to its VM); transcription fails
+  early when it does.
 - Recordings are named `YYYY-MM-DD_<kind>.<ext>`; a sibling `<stem>.txt` transcript, when
   present, replaces transcription.
 - Notifications use [ntfy](https://ntfy.sh). The topic is the only secret:
@@ -89,6 +91,10 @@ opens a pull request in a content repository for human review.
 - Results: `done/<stem>.json` holds the pull request URL and alert count. A failure moves the
   recording to `failed/` with `<stem>.error.txt`; move it back to `inbox/` to retry.
   `airgap-scribe run <file> --config <config>` processes one recording by hand.
+- Interruptions: transcription runs in 5-minute chunks saved under `work/<stem>/`. If the host
+  stops mid-run, the next scan resumes recordings left in `processing/`, skips the finished
+  chunks and sends a "Resuming" notification. A container step that writes nothing to its work
+  directory for 30 minutes is stopped and fails the recording.
 
 ## Releasing
 

@@ -1,6 +1,6 @@
 [project]
 name = "airgap-scribe"
-version = "0.1.1"
+version = "0.2.0"
 description = "Turn meeting recordings into anonymized written drafts without raw data leaving the machine."
 readme = "README.md"
 license = "MIT"

@@ -1,11 +1,19 @@
 import subprocess
+import wave
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from airgap_scribe import transcribe as transcribe_module
-from airgap_scribe.transcribe import TranscriptionError, transcribe
+from airgap_scribe.transcribe import (
+    TranscriptionError,
+    available_cpus,
+    chunk_windows,
+    transcribe,
+)
+
+SAMPLE_RATE = 16000
 
 
 class FakeWhisper:
@@ -23,10 +31,23 @@ class FakeWhisper:
         return subprocess.CompletedProcess(command, self.returncode, "", self.stderr)
 
 
+def write_silence(path: Path, seconds: float) -> None:
+    with wave.open(str(path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(SAMPLE_RATE)
+        audio.writeframes(b"\x00\x00" * int(seconds * SAMPLE_RATE))
+
+
+@pytest.fixture(autouse=True)
+def plenty_of_cpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(transcribe_module, "available_cpus", lambda: 64)
+
+
 @pytest.fixture
 def inputs(tmp_path: Path) -> tuple[Path, Path]:
     wav = tmp_path / "audio.wav"
-    wav.write_bytes(b"RIFF")
+    write_silence(wav, 1)
     model = tmp_path / "models" / "model-under-test"
     model.parent.mkdir()
     model.write_bytes(b"weights")
@@ -82,8 +103,112 @@ def test_output_base_omits_the_txt_suffix_that_whisper_cli_appends(
 
     command = run(monkeypatch, inputs, out_txt, FakeWhisper())
 
-    assert option_value(command, "-of") == str(tmp_path / "transcript.raw")
+    assert option_value(command, "-of") == str(tmp_path / "transcript.raw.chunks" / "0000.partial")
     assert out_txt.read_text(encoding="utf-8") == "synthetic transcript\n"
+    assert not (tmp_path / "transcript.raw.chunks").exists()
+    assert not (tmp_path / "transcript.raw.txt.partial").exists()
+
+
+def test_chunk_windows_cover_the_audio_without_overlap() -> None:
+    assert chunk_windows(650_000, 300_000) == [(0, 300_000), (300_000, 300_000), (600_000, 50_000)]
+    assert chunk_windows(0, 300_000) == []
+
+
+def test_long_audio_is_transcribed_in_chunks_joined_in_order(
+    monkeypatch: pytest.MonkeyPatch, inputs: tuple[Path, Path], tmp_path: Path
+) -> None:
+    monkeypatch.setattr(transcribe_module, "CHUNK_SECONDS", 1)
+    wav, model = inputs
+    write_silence(wav, 2.5)
+    written: list[str] = []
+
+    def numbered(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        written.append(option_value(command, "-ot") + "+" + option_value(command, "-d"))
+        base = command[command.index("-of") + 1]
+        Path(base + ".txt").write_text(f"part {len(written)}\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(transcribe_module.subprocess, "run", numbered)
+    out_txt = tmp_path / "transcript.raw.txt"
+
+    transcribe(wav, out_txt, model, "pt", "", 2)
+
+    assert written == ["0+1000", "1000+1000", "2000+500"]
+    assert out_txt.read_text(encoding="utf-8") == "part 1\npart 2\npart 3\n"
+
+
+def test_chunks_finished_by_an_interrupted_run_are_not_transcribed_again(
+    monkeypatch: pytest.MonkeyPatch, inputs: tuple[Path, Path], tmp_path: Path
+) -> None:
+    monkeypatch.setattr(transcribe_module, "CHUNK_SECONDS", 1)
+    wav, model = inputs
+    write_silence(wav, 2)
+    chunks = tmp_path / "transcript.raw.chunks"
+    chunks.mkdir()
+    (chunks / "0000.txt").write_text("kept from the first run\n", encoding="utf-8")
+    fake = FakeWhisper()
+    monkeypatch.setattr(transcribe_module.subprocess, "run", fake)
+    out_txt = tmp_path / "transcript.raw.txt"
+
+    transcribe(wav, out_txt, model, "pt", "", 2)
+
+    [command] = fake.commands
+    assert option_value(command, "-ot") == "1000"
+    assert out_txt.read_text(encoding="utf-8") == (
+        "kept from the first run\nsynthetic transcript\n"
+    )
+
+
+def test_a_failed_chunk_keeps_the_finished_ones_and_writes_no_transcript(
+    monkeypatch: pytest.MonkeyPatch, inputs: tuple[Path, Path], tmp_path: Path
+) -> None:
+    monkeypatch.setattr(transcribe_module, "CHUNK_SECONDS", 1)
+    wav, model = inputs
+    write_silence(wav, 2)
+    calls: list[str] = []
+
+    def second_fails(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command[command.index("-of") + 1])
+        if len(calls) == 2:
+            return subprocess.CompletedProcess(command, 1, "", "killed")
+        Path(calls[-1] + ".txt").write_text("first\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(transcribe_module.subprocess, "run", second_fails)
+    out_txt = tmp_path / "transcript.raw.txt"
+
+    with pytest.raises(TranscriptionError, match="killed"):
+        transcribe(wav, out_txt, model, "pt", "", 2)
+    assert (tmp_path / "transcript.raw.chunks" / "0000.txt").read_text() == "first\n"
+    assert not out_txt.exists()
+
+
+def test_more_threads_than_container_cpus_fails_before_running_whisper(
+    monkeypatch: pytest.MonkeyPatch, inputs: tuple[Path, Path], tmp_path: Path
+) -> None:
+    monkeypatch.setattr(transcribe_module, "available_cpus", lambda: 6)
+    fake = FakeWhisper()
+    monkeypatch.setattr(transcribe_module.subprocess, "run", fake)
+    wav, model = inputs
+
+    with pytest.raises(TranscriptionError, match=r"threads is 8, but the container has only 6"):
+        transcribe(wav, tmp_path / "transcript.raw.txt", model, "pt", "", 8)
+    assert fake.commands == []
+
+
+def test_available_cpus_counts_the_cpus_this_process_may_use() -> None:
+    assert available_cpus() == len(transcribe_module.os.sched_getaffinity(0))
+
+
+def test_audio_that_is_not_a_wav_file_raises_a_clear_error(
+    monkeypatch: pytest.MonkeyPatch, inputs: tuple[Path, Path], tmp_path: Path
+) -> None:
+    monkeypatch.setattr(transcribe_module.subprocess, "run", FakeWhisper())
+    wav, model = inputs
+    wav.write_bytes(b"RIFF")
+
+    with pytest.raises(TranscriptionError, match=r"could not read the duration of audio\.wav"):
+        transcribe(wav, tmp_path / "transcript.raw.txt", model, "pt", "", 1)
 
 
 def test_empty_initial_prompt_is_not_passed(
