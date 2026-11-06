@@ -93,7 +93,7 @@ def _run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
-    pipeline.run_one(meeting, config)
+    pipeline.run_file(meeting, config)
     return 0
 
 

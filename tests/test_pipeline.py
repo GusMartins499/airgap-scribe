@@ -16,6 +16,7 @@ from airgap_scribe.pipeline import (
     ContainerError,
     PipelineError,
     StageFailedError,
+    run_file,
     run_one,
     scan,
     try_one,
@@ -37,6 +38,8 @@ class FakeDocker:
     def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.log = tmp_path / "docker-calls.jsonl"
         self.fail_on = tmp_path / "docker-fail-on.txt"
+        self.hang_on = tmp_path / "docker-hang-on.txt"
+        self.slow_on = tmp_path / "docker-slow-on.txt"
         self.alerts = tmp_path / "docker-alerts.json"
         self.alerts.write_text(json.dumps(ALERT_RECORDS), encoding="utf-8")
         bin_dir = tmp_path / "docker-bin"
@@ -51,11 +54,23 @@ base = pathlib.Path({str(tmp_path)!r})
 args = sys.argv[1:]
 with (base / "docker-calls.jsonl").open("a", encoding="utf-8") as log:
     log.write(json.dumps(args) + "\\n")
+if args[0] == "rm":
+    sys.exit(0)
 mounts = dict(
     args[i + 1].split(":")[1::-1] for i, arg in enumerate(args) if arg == "-v"
 )
 work = pathlib.Path(mounts["/work"])
 step = "prepare" if "prepare" in args else "verify"
+hang_on = base / "docker-hang-on.txt"
+if hang_on.exists() and hang_on.read_text().strip() == step:
+    import time
+    time.sleep(60)
+slow_on = base / "docker-slow-on.txt"
+if slow_on.exists() and slow_on.read_text().strip() == step:
+    import time
+    for index in range(6):
+        (work / f"progress-{{index}}").write_text("chunk")
+        time.sleep(0.2)
 fail_on = base / "docker-fail-on.txt"
 if fail_on.exists() and fail_on.read_text().strip() == step:
     sys.stderr.write("container stderr with raw details")
@@ -145,6 +160,8 @@ def test_run_one_runs_prepare_in_an_isolated_container(
     assert prepare_call == [
         "run",
         "--rm",
+        "--name",
+        "airgap-scribe-prepare-2026-11-09_talk",
         "--network",
         "none",
         "--user",
@@ -186,6 +203,8 @@ def test_run_one_runs_verify_with_only_the_work_dir_mounted(
     assert verify_call == [
         "run",
         "--rm",
+        "--name",
+        "airgap-scribe-verify-2026-11-09_talk",
         "--network",
         "none",
         "--user",
@@ -392,7 +411,7 @@ def test_scan_does_not_retry_a_recording_that_stays_in_the_inbox(
     config: Config, docker: FakeDocker, host: HostDoubles
 ) -> None:
     drop(config, "2026-11-09_talk.m4a")
-    (Queue(config.paths.data_dir).processing / "2026-11-09_talk.m4a").write_bytes(b"leftover")
+    (Queue(config.paths.data_dir).processing / "2026-11-09_talk.m4a").mkdir()
 
     with pytest.raises(PipelineError, match=r"\(claim\)"):
         scan(config)
@@ -445,9 +464,11 @@ def test_try_one_runs_prepare_on_a_copy_of_any_audio_file(
     assert audio.is_file()
     assert (work_dir / "input" / "any recording.mp3").read_bytes() == b"synthetic audio"
     prepare_call = docker.calls()[0]
-    assert prepare_call[:6] == [
+    assert prepare_call[:8] == [
         "run",
         "--rm",
+        "--name",
+        "airgap-scribe-prepare-try-out",
         "--network",
         "none",
         "--user",
@@ -513,3 +534,117 @@ def test_try_one_reports_a_failing_container_step(
 
     with pytest.raises(ContainerError, match="container step 'verify'"):
         try_one(try_audio(tmp_path), "talk", tmp_path / "try-out", config)
+
+
+def test_scan_resumes_a_recording_left_in_processing_by_an_interrupted_run(
+    config: Config, docker: FakeDocker, host: HostDoubles, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resumed = Recorder()
+    monkeypatch.setattr(pipeline, "notify_resumed", resumed)
+    queue = Queue(config.paths.data_dir)
+    (queue.processing / "2026-11-09_talk.m4a").write_bytes(b"synthetic audio")
+
+    scan(config)
+
+    assert docker.calls()[:2] == [
+        ["rm", "--force", "airgap-scribe-prepare-2026-11-09_talk"],
+        ["rm", "--force", "airgap-scribe-verify-2026-11-09_talk"],
+    ]
+    assert [call[0] for call in resumed.calls] == ["2026-11-09_talk"]
+    assert queue.is_done("2026-11-09_talk")
+    assert (queue.done / "2026-11-09_talk.m4a").is_file()
+
+
+def test_a_failed_resume_notification_does_not_stop_the_resumed_run(
+    config: Config,
+    docker: FakeDocker,
+    host: HostDoubles,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(pipeline, "notify_resumed", Recorder(error=OSError("offline")))
+    queue = Queue(config.paths.data_dir)
+    (queue.processing / "2026-11-09_talk.m4a").write_bytes(b"synthetic audio")
+
+    scan(config)
+
+    assert queue.is_done("2026-11-09_talk")
+    assert "could not send the resume notification" in capsys.readouterr().err
+
+
+def test_a_container_step_without_progress_is_stopped_and_fails_the_item(
+    config: Config, docker: FakeDocker, host: HostDoubles, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pipeline, "STALL_SECONDS", 1)
+    monkeypatch.setattr(pipeline, "POLL_SECONDS", 0.1)
+    docker.hang_on.write_text("prepare")
+
+    with pytest.raises(StageFailedError) as raised:
+        run_one(drop(config, "2026-11-09_talk.m4a"), config)
+
+    assert raised.value.stage == "prepare"
+    assert ["rm", "--force", "airgap-scribe-prepare-2026-11-09_talk"] in docker.calls()
+    error = Queue(config.paths.data_dir).error_path("2026-11-09_talk").read_text()
+    assert "made no progress" in error
+    assert len(host.notify_failure.calls) == 1
+
+
+def test_a_container_step_that_keeps_writing_is_not_stopped(
+    config: Config, docker: FakeDocker, host: HostDoubles, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pipeline, "STALL_SECONDS", 0.6)
+    monkeypatch.setattr(pipeline, "POLL_SECONDS", 0.1)
+    docker.slow_on.write_text("prepare")
+
+    run_one(drop(config, "2026-11-09_talk.m4a"), config)
+
+    assert Queue(config.paths.data_dir).is_done("2026-11-09_talk")
+
+
+def test_a_stuck_container_is_stopped_even_if_docker_cannot_remove_it(
+    config: Config, docker: FakeDocker, host: HostDoubles, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pipeline, "STALL_SECONDS", 1)
+    monkeypatch.setattr(pipeline, "POLL_SECONDS", 0.1)
+    real_run = pipeline.subprocess.run
+
+    def removal_hangs(command: list[str], **kwargs: Any) -> Any:
+        if command[:2] == ["docker", "rm"]:
+            raise pipeline.subprocess.TimeoutExpired(command, 60)
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(pipeline.subprocess, "run", removal_hangs)
+    docker.hang_on.write_text("prepare")
+
+    with pytest.raises(StageFailedError):
+        run_one(drop(config, "2026-11-09_talk.m4a"), config)
+
+
+def test_run_file_runs_one_recording_while_holding_the_queue_lock(
+    config: Config, docker: FakeDocker, host: HostDoubles, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fcntl
+
+    held: list[bool] = []
+    lock_file = Queue(config.paths.data_dir).data_dir / ".lock"
+
+    def check_lock(meeting: MeetingFile, config: Config) -> None:
+        with lock_file.open("a") as other:
+            try:
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held.append(False)
+            except BlockingIOError:
+                held.append(True)
+
+    monkeypatch.setattr(pipeline, "run_one", check_lock)
+
+    run_file(drop(config, "2026-11-09_talk.m4a"), config)
+
+    assert held == [True]
+
+
+def test_container_names_only_keep_characters_docker_accepts(tmp_path: Path) -> None:
+    assert (
+        pipeline.container_name("prepare", tmp_path / "WhatsApp Audio 2026-10-28 at 21.38")
+        == "airgap-scribe-prepare-WhatsApp-Audio-2026-10-28-at-21.38"
+    )

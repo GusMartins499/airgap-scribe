@@ -78,7 +78,9 @@ def test_recording_is_converted_transcribed_and_anonymized_in_order(
     prepare(source, None, work, config)
 
     assert names(calls) == ["to_wav", "transcribe", "anonymize_text"]
-    assert calls.log[0][1] == (source, work / workdir.AUDIO_WAV)
+    assert calls.log[0][1] == (source, work / "audio.partial.wav")
+    assert (work / workdir.AUDIO_WAV).read_bytes() == b"RIFF"
+    assert not (work / "audio.partial.wav").exists()
 
 
 def test_transcription_uses_the_configured_model_and_settings(
@@ -177,3 +179,29 @@ def test_audio_failure_stops_before_transcription(
         prepare(tmp_path / "meeting.m4a", None, tmp_path / "work", config)
     assert calls.log == []
     assert not (tmp_path / "work" / workdir.TRANSCRIPT_ANON).exists()
+
+
+def test_a_wav_left_by_an_interrupted_run_is_not_converted_again(
+    calls: Calls, config: Config, tmp_path: Path
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / workdir.AUDIO_WAV).write_bytes(b"RIFF from the first run")
+
+    prepare(tmp_path / "meeting.m4a", None, work, config)
+
+    assert names(calls) == ["transcribe", "anonymize_text"]
+    assert (work / workdir.AUDIO_WAV).read_bytes() == b"RIFF from the first run"
+
+
+def test_a_transcript_left_by_an_interrupted_run_skips_conversion_and_transcription(
+    calls: Calls, config: Config, tmp_path: Path
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / workdir.TRANSCRIPT_RAW).write_text(RAW_TEXT, encoding="utf-8")
+
+    prepare(tmp_path / "meeting.m4a", None, work, config)
+
+    assert names(calls) == ["anonymize_text"]
+    assert (work / workdir.TRANSCRIPT_ANON).read_text(encoding="utf-8") == ANON_TEXT

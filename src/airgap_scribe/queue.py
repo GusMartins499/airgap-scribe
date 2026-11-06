@@ -1,5 +1,7 @@
+import fcntl
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,7 @@ DONE = "done"
 FAILED = "failed"
 WORK = "work"
 MODELS = "models"
+LOCK = ".lock"
 
 
 class Queue:
@@ -35,12 +38,28 @@ class Queue:
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
+    @contextmanager
+    def lock(self) -> Iterator[None]:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        with (self.data_dir / LOCK).open("a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
     def pending(self, kinds: Iterable[str]) -> list[MeetingFile]:
-        if not self.inbox.is_dir():
+        return self._eligible(self.inbox, kinds)
+
+    def interrupted(self, kinds: Iterable[str]) -> list[MeetingFile]:
+        return self._eligible(self.processing, kinds)
+
+    def _eligible(self, directory: Path, kinds: Iterable[str]) -> list[MeetingFile]:
+        if not directory.is_dir():
             return []
         allowed_kinds = tuple(kinds)
         items = []
-        for entry in self.inbox.iterdir():
+        for entry in directory.iterdir():
             if not entry.is_file():
                 continue
             item = parse_meeting_file(entry, allowed_kinds)

@@ -101,7 +101,7 @@ def test_verify_reports_only_the_alert_count(
 
 def test_run_parses_the_file_and_runs_the_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     recorder = Recorder()
-    monkeypatch.setattr(pipeline, "run_one", recorder)
+    monkeypatch.setattr(pipeline, "run_file", recorder)
 
     code = cli.main(["run", "/inbox/2026-11-09_talk.m4a", "--config", str(EXAMPLE_CONFIG)])
 
@@ -116,7 +116,7 @@ def test_run_rejects_a_file_that_is_not_a_meeting_recording(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     recorder = Recorder()
-    monkeypatch.setattr(pipeline, "run_one", recorder)
+    monkeypatch.setattr(pipeline, "run_file", recorder)
 
     code = cli.main(["run", "/inbox/notes.m4a", "--config", str(EXAMPLE_CONFIG)])
 

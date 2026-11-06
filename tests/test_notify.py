@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 from host_config import TOPIC_ENV, make_config, make_meeting
 
-from airgap_scribe.notify import NotifyError, notify_failure, notify_success, summarize_error
+from airgap_scribe.notify import (
+    NotifyError,
+    notify_failure,
+    notify_resumed,
+    notify_success,
+    summarize_error,
+)
 from airgap_scribe.publish import Publication
 
 TOPIC = "0123456789abcdef0123456789abcdef"
@@ -111,6 +117,18 @@ def test_failure_is_high_priority_and_names_the_stage(tmp_path: Path, ntfy: Ntfy
     assert request.headers["Priority"] == "high"
     assert "Actions" not in request.headers
     assert request.body == "Stage: draft\nDraftError"
+
+
+def test_resume_names_the_recording_and_says_work_continues(tmp_path: Path, ntfy: NtfyStub) -> None:
+    config = make_config(tmp_path, server=ntfy.url.rstrip("/"))
+
+    notify_resumed("2026-11-09_talk", config)
+
+    [request] = ntfy.requests
+    assert request.path == f"/{TOPIC}"
+    assert request.headers["Title"] == "Resuming: 2026-11-09_talk"
+    assert request.headers["Priority"] == "default"
+    assert "resumes from the saved work" in request.body
 
 
 def test_failure_message_keeps_only_a_short_first_line_of_the_error(
