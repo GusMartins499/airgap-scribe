@@ -33,3 +33,9 @@ topic_env = "AIRGAP_SCRIBE_NTFY_TOPIC"
 
 [container]
 image = "ghcr.io/gusmartins499/airgap-scribe:0.1.1"
+# Optional limits for every container (docker run --cpus / --memory). threads must not exceed cpus.
+# cpus = 10
+# memory = "6g"
+# Rootless Docker maps the container's root to your user: set user = "0:0" there, or the
+# containers cannot write to the work directory. Default: your own uid:gid.
+# user = "0:0"

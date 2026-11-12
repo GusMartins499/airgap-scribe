@@ -423,3 +423,58 @@ def test_the_shipped_try_example_config_is_valid_for_try_only() -> None:
     assert config.drafting.prompts["talk"].is_file()
     with pytest.raises(ConfigError):
         load_config(path)
+
+
+def test_container_limits_are_optional(tmp_path: Path) -> None:
+    config = load_config(write_config(tmp_path))
+
+    assert config.container is not None
+    assert (config.container.cpus, config.container.memory) == (None, None)
+    assert config.container.user is None
+
+
+def test_container_limits_are_read(tmp_path: Path) -> None:
+    path = write_config(tmp_path, container='image = "i"\ncpus = 10\nmemory = "6g"')
+
+    config = load_config(path)
+
+    assert config.container is not None
+    assert (config.container.cpus, config.container.memory) == (10.0, "6g")
+
+
+@pytest.mark.parametrize(
+    ("limits", "message"),
+    [
+        ("cpus = 0", r"'container.cpus' must be a positive number"),
+        ('cpus = "10"', r"'container.cpus' must be a positive number"),
+        ("cpus = true", r"'container.cpus' must be a positive number"),
+        ('memory = "6 GB"', r"'container.memory' must be a size"),
+        ('memory = ""', r"'container.memory' must not be empty"),
+        ("memory = 6", r"'container.memory' must be a string"),
+        ('user = "root"', r"'container.user' must be numeric"),
+        ('user = "0"', r"'container.user' must be numeric"),
+    ],
+)
+def test_invalid_container_limits_are_rejected(tmp_path: Path, limits: str, message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        load_config(write_config(tmp_path, container=f'image = "i"\n{limits}'))
+
+
+def test_more_threads_than_the_cpu_limit_is_rejected(tmp_path: Path) -> None:
+    path = write_config(tmp_path, container='image = "i"\ncpus = 2.5')
+
+    with pytest.raises(ConfigError, match=r"threads' is 4, but 'container.cpus' limits .* 2.5"):
+        load_config(path)
+
+
+def test_container_limits_stay_out_of_the_container_config(tmp_path: Path) -> None:
+    config = load_config(write_config(tmp_path, container='image = "i"\ncpus = 10'))
+
+    assert "cpus" not in container_config_toml(config)
+
+
+def test_container_user_is_read(tmp_path: Path) -> None:
+    config = load_config(write_config(tmp_path, container='image = "i"\nuser = "0:0"'))
+
+    assert config.container is not None
+    assert config.container.user == "0:0"
