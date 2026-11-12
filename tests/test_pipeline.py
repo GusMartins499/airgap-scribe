@@ -648,3 +648,164 @@ def test_container_names_only_keep_characters_docker_accepts(tmp_path: Path) -> 
         pipeline.container_name("prepare", tmp_path / "WhatsApp Audio 2026-10-28 at 21.38")
         == "airgap-scribe-prepare-WhatsApp-Audio-2026-10-28-at-21.38"
     )
+
+
+STEM = "2026-11-09_talk"
+NOTE = "Nome: Fulano de Tal\nFoto: Pessoas reunidas\n"
+PHOTO = b"\xff\xd8\xff\xfe\x00\x06GPS!\xff\xda\x00\x02\x12\xff\xd9"
+
+
+def attach(config: Config, note: bool = True, photo: bool = True) -> None:
+    inbox = Queue(config.paths.data_dir).inbox
+    if note:
+        (inbox / f"{STEM}-credito.txt").write_text(NOTE, encoding="utf-8")
+    if photo:
+        (inbox / f"{STEM}.jpg").write_bytes(PHOTO)
+
+
+def assert_credited(config: Config) -> None:
+    queue = Queue(config.paths.data_dir)
+    draft = (queue.work / STEM / DRAFT).read_text(encoding="utf-8")
+    assert '  name: "Fulano de Tal"\n' in draft
+    assert f'photo: "./{STEM}.jpg"\nphotoAlt: "Pessoas reunidas"\n' in draft
+    assert b"GPS" not in (queue.work / STEM / f"{STEM}.jpg").read_bytes()
+    assert sorted(path.name for path in queue.done.glob(f"{STEM}*")) == [
+        f"{STEM}-credito.txt",
+        f"{STEM}.jpg",
+        f"{STEM}.json",
+        f"{STEM}.m4a",
+    ]
+    assert list(queue.inbox.iterdir()) == []
+
+
+def test_attachments_sent_before_the_recording_are_credited(
+    config: Config, docker: FakeDocker, host: HostDoubles
+) -> None:
+    attach(config)
+    drop(config, f"{STEM}.m4a")
+
+    scan(config)
+
+    assert_credited(config)
+
+
+def test_attachments_sent_during_transcription_are_credited(
+    config: Config, docker: FakeDocker, host: HostDoubles, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_prepare = pipeline.run_prepare
+
+    def prepare_while_files_arrive(*args: Any) -> None:
+        real_prepare(*args)
+        attach(config)
+
+    monkeypatch.setattr(pipeline, "run_prepare", prepare_while_files_arrive)
+    drop(config, f"{STEM}.m4a")
+
+    scan(config)
+
+    assert_credited(config)
+
+
+def test_a_recording_without_attachments_is_published_as_before(
+    config: Config, docker: FakeDocker, host: HostDoubles
+) -> None:
+    run_one(drop(config, f"{STEM}.m4a"), config)
+
+    queue = Queue(config.paths.data_dir)
+    assert (queue.work / STEM / DRAFT).read_text() == "---\ntitle: T\n---\nBody.\n"
+    assert len(host.publish.calls) == 1
+
+
+def test_a_transcript_that_is_a_credit_note_fails_before_any_container_runs(
+    config: Config, docker: FakeDocker, host: HostDoubles
+) -> None:
+    meeting = drop(config, f"{STEM}.m4a")
+    (Queue(config.paths.data_dir).inbox / f"{STEM}.txt").write_text(NOTE, encoding="utf-8")
+    meeting = replace(meeting, transcript=meeting.path.with_name(f"{STEM}.txt"))
+
+    with pytest.raises(StageFailedError) as raised:
+        run_one(meeting, config)
+
+    assert raised.value.stage == "prepare"
+    assert docker.calls() == []
+    error = Queue(config.paths.data_dir).error_path(STEM).read_text()
+    assert f"rename it to {STEM}-credito.txt" in error
+
+
+class LateDoubles:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, state: str = "OPEN") -> None:
+        self.state = Recorder(state)
+        self.publish_attachments = Recorder(True)
+        self.notify_late = Recorder()
+        monkeypatch.setattr(pipeline, "pull_request_state", self.state)
+        monkeypatch.setattr(pipeline, "publish_attachments", self.publish_attachments)
+        monkeypatch.setattr(pipeline, "notify_late_attachments", self.notify_late)
+
+
+def published(config: Config) -> Queue:
+    run_one(drop(config, f"{STEM}.m4a"), config)
+    return Queue(config.paths.data_dir)
+
+
+def test_attachments_sent_after_the_pull_request_opened_go_to_the_draft_branch(
+    config: Config, docker: FakeDocker, host: HostDoubles, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue = published(config)
+    late = LateDoubles(monkeypatch)
+    attach(config, photo=False)
+    scan(config)
+    attach(config, note=False)
+
+    scan(config)
+
+    assert late.state.calls == [(PUBLICATION.pr_url,), (PUBLICATION.pr_url,)]
+    [(first, *_), (stem, branch, pr_url, assembly, _)] = late.publish_attachments.calls
+    assert first == stem == STEM
+    assert (branch, pr_url) == (PUBLICATION.branch, PUBLICATION.pr_url)
+    assert assembly.photo_name == f"{STEM}.jpg"
+    assert assembly.keys == ("speaker", "photo", "photoAlt")
+    assert (queue.done / f"{STEM}.jpg").is_file()
+    assert list(queue.inbox.iterdir()) == []
+
+
+@pytest.mark.parametrize("state", ["MERGED", "CLOSED"])
+def test_attachments_sent_after_the_pull_request_closed_stay_and_notify_once(
+    config: Config,
+    docker: FakeDocker,
+    host: HostDoubles,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+) -> None:
+    queue = published(config)
+    late = LateDoubles(monkeypatch, state)
+    attach(config, note=False)
+    scan(config)
+    scan(config)
+    attach(config, photo=False)
+
+    scan(config)
+
+    assert late.publish_attachments.calls == []
+    assert [call[:3] for call in late.notify_late.calls] == [
+        (STEM, [f"{STEM}.jpg"], state),
+        (STEM, [f"{STEM}-credito.txt"], state),
+    ]
+    assert sorted(path.name for path in queue.inbox.iterdir()) == [
+        f"{STEM}-credito.txt",
+        f"{STEM}.jpg",
+    ]
+    assert queue.done_record(STEM)["late_notified"] == [f"{STEM}-credito.txt", f"{STEM}.jpg"]
+
+
+def test_a_late_attachment_that_cannot_be_published_is_reported(
+    config: Config, docker: FakeDocker, host: HostDoubles, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    published(config)
+    late = LateDoubles(monkeypatch)
+    late.publish_attachments.error = RuntimeError("push refused")
+    attach(config)
+
+    with pytest.raises(PipelineError, match=rf"{STEM} \(attach\)"):
+        scan(config)
+
+    assert host.notify_failure.calls[-1][:3] == (STEM, "attach", "RuntimeError")

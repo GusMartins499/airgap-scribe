@@ -9,7 +9,7 @@ from airgap_scribe.naming import MeetingFile
 from airgap_scribe.workdir import DRAFT, TRANSCRIPT_ANON
 
 FRONT_MATTER_DELIMITER = "---"
-ENFORCED_KEYS = ("date", "kind")
+ENFORCED_KEYS = ("date", "kind", "speaker", "photo", "photoAlt")
 STDERR_TAIL = 500
 BLOCK_SCALAR_INDICATORS = frozenset({"|", ">", "|-", ">-"})
 EMPTY_SCALARS = frozenset({"", '""', "''"})
@@ -89,6 +89,15 @@ def enforce_front_matter(output: str, meeting: MeetingFile) -> str:
     body = "\n".join(lines[closing + 1 :]).strip("\n")
     document = [FRONT_MATTER_DELIMITER, *front_matter, FRONT_MATTER_DELIMITER, "", body]
     return "\n".join(document) + "\n"
+
+
+def set_front_matter(document: str, keys: Sequence[str], lines: Sequence[str]) -> str:
+    document_lines = document.split("\n")
+    if not document_lines or document_lines[0].strip() != FRONT_MATTER_DELIMITER:
+        raise DraftError("the draft has no front matter")
+    closing = _closing_delimiter(document_lines)
+    front_matter = _without_keys(document_lines[1:closing], keys) + list(lines)
+    return "\n".join([FRONT_MATTER_DELIMITER, *front_matter, *document_lines[closing:]])
 
 
 def _unwrap_code_fence(text: str) -> str:

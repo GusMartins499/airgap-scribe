@@ -221,3 +221,55 @@ def test_lock_is_exclusive_while_held_and_released_afterwards(queue: Queue) -> N
 
     with lock_file.open("a") as other:
         fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_claim_moves_the_attachments_of_the_meeting_only(queue: Queue) -> None:
+    drop(queue, "2026-11-09_talk-credito.txt")
+    drop(queue, "2026-11-09_talk.jpg")
+    drop(queue, "2026-11-10_talk.jpg")
+
+    queue.claim(meeting(queue, "2026-11-09_talk.m4a"))
+
+    assert sorted(path.name for path in queue.processing.iterdir()) == [
+        "2026-11-09_talk-credito.txt",
+        "2026-11-09_talk.jpg",
+        "2026-11-09_talk.m4a",
+    ]
+    assert [path.name for path in queue.inbox.iterdir()] == ["2026-11-10_talk.jpg"]
+
+
+def test_complete_and_fail_move_the_attachments_along(queue: Queue) -> None:
+    drop(queue, "2026-11-09_talk.jpg")
+    drop(queue, "2026-11-10_talk-credito.txt")
+    queue.complete(queue.claim(meeting(queue, "2026-11-09_talk.m4a")), {})
+    queue.fail(queue.claim(meeting(queue, "2026-11-10_talk.m4a")), "boom")
+
+    assert (queue.done / "2026-11-09_talk.jpg").is_file()
+    assert (queue.failed / "2026-11-10_talk-credito.txt").is_file()
+
+
+def test_move_attachments_replaces_an_older_copy(queue: Queue) -> None:
+    (queue.done / "2026-11-09_talk-credito.txt").write_text("Nome:\n", encoding="utf-8")
+    drop(queue, "2026-11-09_talk-credito.txt", "Nome: Fixed\n")
+
+    moved = queue.move_attachments("2026-11-09_talk", queue.inbox, queue.done)
+
+    assert moved == [queue.done / "2026-11-09_talk-credito.txt"]
+    assert moved[0].read_text(encoding="utf-8") == "Nome: Fixed\n"
+
+
+def test_late_attachments_lists_only_stems_already_done(queue: Queue) -> None:
+    queue.complete(queue.claim(meeting(queue, "2026-11-09_talk.m4a")), {})
+    drop(queue, "2026-11-09_talk.jpg")
+    drop(queue, "2026-11-09_talk-credito.txt")
+    drop(queue, "2026-11-10_talk.jpg")
+    drop(queue, "unrelated.jpg")
+
+    assert queue.late_attachments() == ["2026-11-09_talk"]
+    assert Queue(queue.data_dir / "missing").late_attachments() == []
+
+
+def test_done_record_round_trips(queue: Queue) -> None:
+    queue.update_done_record("2026-11-09_talk", {"pr_url": "u", "note": "ação"})
+
+    assert queue.done_record("2026-11-09_talk") == {"pr_url": "u", "note": "ação"}
