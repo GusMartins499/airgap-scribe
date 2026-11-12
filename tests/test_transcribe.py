@@ -196,8 +196,30 @@ def test_more_threads_than_container_cpus_fails_before_running_whisper(
     assert fake.commands == []
 
 
-def test_available_cpus_counts_the_cpus_this_process_may_use() -> None:
-    assert available_cpus() == len(transcribe_module.os.sched_getaffinity(0))
+def test_available_cpus_counts_the_cpus_this_process_may_use(tmp_path: Path) -> None:
+    assert available_cpus(tmp_path / "no-cgroup") == len(transcribe_module.os.sched_getaffinity(0))
+
+
+@pytest.mark.parametrize(
+    ("cpu_max", "expected"),
+    [
+        ("1000000 100000\n", 10),
+        ("250000 100000\n", 2),
+        ("50000 100000\n", 1),
+        ("max 100000\n", 64),
+        ("garbage\n", 64),
+        ("abc 100000\n", 64),
+        ("0 100000\n", 64),
+    ],
+)
+def test_available_cpus_honors_the_cgroup_cpu_quota(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cpu_max: str, expected: int
+) -> None:
+    monkeypatch.setattr(transcribe_module.os, "sched_getaffinity", lambda pid: set(range(64)))
+    path = tmp_path / "cpu.max"
+    path.write_text(cpu_max, encoding="utf-8")
+
+    assert available_cpus(path) == expected
 
 
 def test_audio_that_is_not_a_wav_file_raises_a_clear_error(

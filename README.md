@@ -66,7 +66,21 @@ opens a pull request in a content repository for human review.
   `done/`, `failed/`, `work/` and `models/`; `[publish]` points at the content repository;
   `[container] image` is the image to run. `[transcription] threads` must not exceed the CPUs
   the container can use (with Docker Desktop, the CPUs given to its VM); transcription fails
-  early when it does.
+  early when it does. Going past the number of physical cores does not help: on a 6-core,
+  12-thread CPU, 31 minutes of audio took 20.6 minutes with 6 threads and 20.5 with 10.
+- Container limits: `[container] cpus` and `memory` (for example `cpus = 10`, `memory = "6g"`)
+  are optional and passed to every `docker run` as `--cpus` and `--memory`. On the native Docker
+  engine there is no VM, so without them a container can use the whole host. `threads` must not
+  exceed `cpus`; the container also reads its CPU quota from the cgroup, so the check holds.
+  To run only the pipeline on another engine, set `DOCKER_CONTEXT` (for example
+  `DOCKER_CONTEXT=default`) in `~/.config/airgap-scribe/env` instead of `docker context use`,
+  and pull the image on that engine: engines do not share images.
+- Rootless Docker (`dockerd-rootless-setuptool.sh install`, context `rootless`): set
+  `[container] user = "0:0"`. Rootless maps the container's root to your own user, while your
+  uid inside the container becomes an unprivileged sub-uid that cannot write to `work/`. For
+  `--cpus` to apply, systemd must delegate the `cpu` controller to user sessions
+  (`Delegate=cpu cpuset io memory pids` in `/etc/systemd/system/user@.service.d/delegate.conf`);
+  check `/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers`.
 - Recordings are named `YYYY-MM-DD_<kind>.<ext>`; a sibling `<stem>.txt` transcript, when
   present, replaces transcription. A credit note and a meeting photo can come along with them
   (see [Credit and photo](#credit-and-photo)).

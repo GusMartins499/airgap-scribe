@@ -7,6 +7,7 @@ from pathlib import Path
 WHISPER_CLI = "whisper-cli"
 TEXT_SUFFIX = ".txt"
 CHUNK_SECONDS = 300
+CGROUP_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
 CHUNKS_SUFFIX = ".chunks"
 PARTIAL_SUFFIX = ".partial"
 
@@ -48,8 +49,24 @@ def whisper_command(
     return command
 
 
-def available_cpus() -> int:
-    return len(os.sched_getaffinity(0))
+def available_cpus(cpu_max: Path = CGROUP_CPU_MAX) -> int:
+    cpus = len(os.sched_getaffinity(0))
+    quota = cgroup_cpu_quota(cpu_max)
+    return cpus if quota is None else max(1, min(cpus, int(quota)))
+
+
+def cgroup_cpu_quota(cpu_max: Path = CGROUP_CPU_MAX) -> float | None:
+    try:
+        fields = cpu_max.read_text(encoding="utf-8").split()
+    except OSError:
+        return None
+    if len(fields) != 2 or fields[0] == "max":
+        return None
+    try:
+        quota, period = int(fields[0]), int(fields[1])
+    except ValueError:
+        return None
+    return quota / period if quota > 0 and period > 0 else None
 
 
 def chunk_windows(total_ms: int, chunk_ms: int) -> list[tuple[int, int]]:

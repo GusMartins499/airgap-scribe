@@ -650,6 +650,42 @@ def test_container_names_only_keep_characters_docker_accepts(tmp_path: Path) -> 
     )
 
 
+def test_container_limits_are_passed_to_every_docker_run(
+    config: Config, docker: FakeDocker, host: HostDoubles
+) -> None:
+    assert config.container is not None
+    limited = replace(config, container=replace(config.container, cpus=10.0, memory="6g"))
+
+    run_one(drop(limited, "2026-11-09_talk.m4a"), limited)
+
+    for call in docker.calls():
+        user = call.index("--user")
+        assert call[user + 2 : user + 6] == ["--cpus", "10", "--memory", "6g"]
+
+
+def test_fractional_cpu_limits_are_passed_as_given(
+    config: Config, docker: FakeDocker, host: HostDoubles
+) -> None:
+    assert config.container is not None
+    limited = replace(config, container=replace(config.container, cpus=2.5))
+
+    run_one(drop(limited, "2026-11-09_talk.m4a"), limited)
+
+    assert all("--memory" not in call and "2.5" in call for call in docker.calls())
+
+
+def test_a_configured_user_replaces_the_host_user(
+    config: Config, docker: FakeDocker, host: HostDoubles
+) -> None:
+    assert config.container is not None
+    rootless = replace(config, container=replace(config.container, user="0:0"))
+
+    run_one(drop(rootless, "2026-11-09_talk.m4a"), rootless)
+
+    for call in docker.calls():
+        assert call[call.index("--user") + 1] == "0:0"
+
+
 STEM = "2026-11-09_talk"
 NOTE = "Nome: Fulano de Tal\nFoto: Pessoas reunidas\n"
 PHOTO = b"\xff\xd8\xff\xfe\x00\x06GPS!\xff\xda\x00\x02\x12\xff\xd9"

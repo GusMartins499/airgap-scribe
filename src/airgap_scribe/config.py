@@ -8,6 +8,8 @@ from typing import Any
 
 CONTAINER_MODELS_DIR = Path("/models")
 KIND_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]*")
+MEMORY_PATTERN = re.compile(r"[0-9]+[bkmg]?", re.IGNORECASE)
+USER_PATTERN = re.compile(r"[0-9]+:[0-9]+")
 
 
 class ConfigError(Exception):
@@ -63,6 +65,9 @@ class NotifySettings:
 @dataclass(frozen=True)
 class ContainerSettings:
     image: str
+    cpus: float | None = None
+    memory: str | None = None
+    user: str | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +121,12 @@ def _load_host_config(path: Path, local: bool) -> Config:
         container=_container(root),
     )
     root.close()
+    cpus = config.container.cpus
+    if cpus is not None and config.transcription.threads > cpus:
+        raise ConfigError(
+            f"'transcription.threads' is {config.transcription.threads}, but "
+            f"'container.cpus' limits each container to {cpus:g} CPU(s)"
+        )
     return config
 
 
@@ -249,7 +260,20 @@ def _notify(root: "_Table", required: bool) -> NotifySettings | None:
 
 def _container(root: "_Table") -> ContainerSettings:
     table = root.table("container")
-    settings = ContainerSettings(image=table.string("image", non_empty=True))
+    memory = table.optional_string("memory")
+    if memory is not None and MEMORY_PATTERN.fullmatch(memory) is None:
+        raise ConfigError(
+            '\'container.memory\' must be a size such as "6g" or "512m" (b, k, m or g)'
+        )
+    user = table.optional_string("user")
+    if user is not None and USER_PATTERN.fullmatch(user) is None:
+        raise ConfigError("'container.user' must be numeric '<uid>:<gid>', such as \"0:0\"")
+    settings = ContainerSettings(
+        image=table.string("image", non_empty=True),
+        cpus=table.optional_positive_number("cpus"),
+        memory=memory,
+        user=user,
+    )
     table.close()
     return settings
 
@@ -299,6 +323,20 @@ class _Table:
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             raise ConfigError(f"'{self._qualified(key)}' must be a positive integer")
         return value
+
+    def optional_positive_number(self, key: str) -> float | None:
+        value = self._get(key, None)
+        if value is None:
+            return None
+        if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0:
+            raise ConfigError(f"'{self._qualified(key)}' must be a positive number")
+        return float(value)
+
+    def optional_string(self, key: str) -> str | None:
+        if key not in self._values:
+            self._seen.add(key)
+            return None
+        return self.string(key, non_empty=True)
 
     def strings(
         self, key: str, default: tuple[str, ...] = _MISSING, non_empty: bool = False

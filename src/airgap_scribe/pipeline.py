@@ -241,8 +241,10 @@ def container_name(step: str, work_dir: Path) -> str:
     return f"airgap-scribe-{step}-" + _INVALID_NAME_CHARACTERS.sub("-", work_dir.name)
 
 
-def container_base_command(name: str) -> list[str]:
-    return [
+def container_base_command(name: str, config: Config) -> list[str]:
+    settings = config.container
+    user = settings.user if settings is not None and settings.user else None
+    command = [
         "docker",
         "run",
         "--rm",
@@ -251,15 +253,20 @@ def container_base_command(name: str) -> list[str]:
         "--network",
         "none",
         "--user",
-        f"{os.getuid()}:{os.getgid()}",
+        user or f"{os.getuid()}:{os.getgid()}",
     ]
+    if settings is not None and settings.cpus is not None:
+        command += ["--cpus", f"{settings.cpus:g}"]
+    if settings is not None and settings.memory is not None:
+        command += ["--memory", settings.memory]
+    return command
 
 
 def prepare_command(
     meeting: MeetingFile, work_dir: Path, input_dir: Path, config: Config
 ) -> list[str]:
     command = [
-        *container_base_command(container_name("prepare", work_dir)),
+        *container_base_command(container_name("prepare", work_dir), config),
         "-v",
         f"{work_dir}:{CONTAINER_WORK}",
         "-v",
@@ -279,7 +286,7 @@ def prepare_command(
 
 def verify_command(work_dir: Path, config: Config) -> list[str]:
     return [
-        *container_base_command(container_name("verify", work_dir)),
+        *container_base_command(container_name("verify", work_dir), config),
         "-v",
         f"{work_dir}:{CONTAINER_WORK}",
         _image(config),
