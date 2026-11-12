@@ -167,6 +167,8 @@ PLANNED_THRESHOLDS = {
     "notify": (80.0, 70.0),
     "cleanup": (80.0, 70.0),
     "pipeline": (80.0, 70.0),
+    "credit": (95.0, 90.0),
+    "photo": (95.0, 90.0),
 }
 
 

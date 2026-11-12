@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from host_config import make_config, make_meeting, write_executable
 
-from airgap_scribe.draft import DraftError, enforce_front_matter, write_draft
+from airgap_scribe.draft import DraftError, enforce_front_matter, set_front_matter, write_draft
 from airgap_scribe.workdir import DRAFT, TRANSCRIPT_ANON
 
 MODEL_OUTPUT = """---
@@ -217,3 +217,32 @@ def test_unclosed_front_matter_is_rejected() -> None:
 def test_front_matter_without_title_is_rejected(front_matter: str) -> None:
     with pytest.raises(DraftError, match="no title"):
         enforce_front_matter(f"---\n{front_matter}\n---\nBody.\n", make_meeting(Path("a.m4a")))
+
+
+def test_credit_keys_written_by_the_model_are_dropped() -> None:
+    output = (
+        "---\ntitle: A title\nspeaker:\n  name: Invented\nphoto: ./guess.jpg\n"
+        "photoAlt: Guess\n---\nBody.\n"
+    )
+
+    draft = enforce_front_matter(output, make_meeting(Path("a.m4a")))
+
+    assert draft == "---\ntitle: A title\ndate: 2026-11-09\nkind: talk\n---\n\nBody.\n"
+
+
+def test_set_front_matter_replaces_keys_and_keeps_the_body_untouched() -> None:
+    document = "---\ntitle: T\nspeaker:\n  name: Old\n---\n\nBody with --- inside.\n"
+
+    updated = set_front_matter(document, ["speaker"], ["speaker:", '  name: "New"'])
+
+    assert updated == '---\ntitle: T\nspeaker:\n  name: "New"\n---\n\nBody with --- inside.\n'
+
+
+@pytest.mark.parametrize(
+    ("document", "message"), [("Body.\n", "no front matter"), ("---\ntitle: T\n", "not closed")]
+)
+def test_set_front_matter_rejects_a_document_without_front_matter(
+    document: str, message: str
+) -> None:
+    with pytest.raises(DraftError, match=message):
+        set_front_matter(document, ["speaker"], [])

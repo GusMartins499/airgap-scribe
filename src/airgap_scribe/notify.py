@@ -1,5 +1,6 @@
 import os
 import urllib.request
+from collections.abc import Sequence
 
 from airgap_scribe.config import Config, NotifySettings
 from airgap_scribe.naming import MeetingFile
@@ -93,3 +94,21 @@ def _post(settings: NotifySettings, message: str, headers: dict[str, str]) -> No
     )
     with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
         response.read()
+
+
+def notify_late_attachments(
+    meeting_stem: str, names: Sequence[str], state: str, config: Config
+) -> None:
+    message = (
+        f"The pull request is {state.lower()}, so these files stayed in the inbox: "
+        f"{', '.join(names)}. Add them to the post by hand; cleanup removes them in a week."
+    )
+    _post(
+        _settings(config),
+        message,
+        {
+            "Title": f"Files arrived late: {meeting_stem}",
+            "Tags": "paperclip",
+            "Priority": "default",
+        },
+    )

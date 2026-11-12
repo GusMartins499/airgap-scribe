@@ -68,7 +68,8 @@ opens a pull request in a content repository for human review.
   the container can use (with Docker Desktop, the CPUs given to its VM); transcription fails
   early when it does.
 - Recordings are named `YYYY-MM-DD_<kind>.<ext>`; a sibling `<stem>.txt` transcript, when
-  present, replaces transcription.
+  present, replaces transcription. A credit note and a meeting photo can come along with them
+  (see [Credit and photo](#credit-and-photo)).
 - Notifications use [ntfy](https://ntfy.sh). The topic is the only secret:
 
   ```sh
@@ -89,12 +90,72 @@ opens a pull request in a content repository for human review.
   The units assume `data_dir = "~/airgap-scribe-data"`, the config in
   `~/.config/airgap-scribe/` and executables in `~/.local/bin`.
 - Results: `done/<stem>.json` holds the pull request URL and alert count. A failure moves the
-  recording to `failed/` with `<stem>.error.txt`; move it back to `inbox/` to retry.
+  recording, its credit note and photo to `failed/` with `<stem>.error.txt`; move them back to
+  `inbox/` to retry.
   `airgap-scribe run <file> --config <config>` processes one recording by hand.
 - Interruptions: transcription runs in 5-minute chunks saved under `work/<stem>/`. If the host
   stops mid-run, the next scan resumes recordings left in `processing/`, skips the finished
   chunks and sends a "Resuming" notification. A container step that writes nothing to its work
   directory for 30 minutes is stopped and fails the recording.
+
+## Credit and photo
+
+The post can credit who gave the talk or led the conversation, when that person asks for it,
+and show a photo of the meeting. Both are optional and go in the inbox next to the recording:
+
+| File | What it is |
+| --- | --- |
+| `2026-12-14_roda.m4a` | The recording. Only audio starts processing. |
+| `2026-12-14_roda-credito.txt` | The credit note. |
+| `2026-12-14_roda.jpg` | The meeting photo: `.jpg`, `.jpeg`, `.png` or `.webp`. |
+
+The credit note is plain text, one field per line:
+
+```text
+Nome: Fulano de Tal
+Instagram: @fulano
+Foto: Participantes reunidos em roda na sala do encontro
+```
+
+`Nome` is required; `Instagram` (with or without `@`, or a profile link) and `Foto` are
+optional. Keys ignore case and accents. `Foto` is the description of the photo for people who
+cannot see it (`photoAlt`), and the website refuses a photo without it, so a photo without a
+`Foto:` line stays out of the post until the line arrives.
+
+The draft gets this front matter:
+
+```yaml
+speaker:
+  name: "Fulano de Tal"
+  instagram: "fulano"
+photo: "./2026-12-14_roda.jpg"
+photoAlt: "Participantes reunidos em roda na sala do encontro"
+```
+
+- **The name never reaches the language model.** The transcript stays anonymized as before;
+  the credit goes straight into the front matter after the name check, like `date` and `kind`.
+  Whatever the model writes in `speaker`, `photo` or `photoAlt` is dropped.
+- **The photo keeps its format and quality.** Only its metadata is removed (location, camera,
+  dates); the orientation is kept so the photo is not shown sideways. The website builds the
+  WebP sizes and the link-preview JPEG itself. HEIC photos are not supported: send them as
+  JPEG.
+- **Files can arrive in any order.** They are read when the draft is assembled, so a note or
+  photo sent before the recording or during transcription is picked up. The pull request body
+  lists what was credited and what is missing (no note, a note without `Nome:`, a photo
+  without `Foto:`).
+- **After the pull request opened**, a new note or photo is committed to the same draft branch,
+  keeping the reviewer's edits, with a comment on the pull request; the preview updates on its
+  own. A corrected note replaces the previous one.
+- **After it was merged or closed**, the files stay in the inbox and a notification says so,
+  once per file; add them to the post by hand. `cleanup` removes credit notes and photos that
+  have waited in the inbox for 7 days without their recording.
+- **`<stem>.txt` still means "ready-made transcript".** Only `<stem>-credito.txt` is a credit
+  note. A transcript that starts with `Nome:` is refused, so a misnamed note does not become
+  the post.
+
+From a phone: write the note in Samsung Notes (or any text editor), save it as a text file
+titled `<stem>-credito` (Samsung Notes: save as text file), and move it and the
+photo to the synced inbox folder, in any order.
 
 ## Releasing
 
@@ -106,7 +167,9 @@ GitHub release are created automatically.
 
 Raw audio and transcripts never leave the machine: every step that reads them runs with
 `docker run --network none`. The model is called with every tool disabled and sees only the
-anonymized transcript; a person reviews each draft before it is published.
+anonymized transcript; a person reviews each draft before it is published. The speaker's name
+from the credit note is added after drafting and never sent to the model, and the photo's
+metadata is removed before it is committed.
 
 ## License
 
