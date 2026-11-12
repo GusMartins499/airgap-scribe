@@ -11,6 +11,7 @@ from host_config import TOPIC_ENV, make_config, make_meeting
 from airgap_scribe.notify import (
     NotifyError,
     notify_failure,
+    notify_late_attachments,
     notify_resumed,
     notify_success,
     summarize_error,
@@ -170,3 +171,20 @@ def test_a_config_without_notify_section_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(NotifyError, match=r"\[notify\]"):
         notify_failure("2026-11-09_talk", "draft", "DraftError", config)
+
+
+def test_late_attachments_name_the_files_and_the_pull_request_state(
+    tmp_path: Path, ntfy: NtfyStub
+) -> None:
+    config = make_config(tmp_path, server=ntfy.url)
+
+    notify_late_attachments(
+        "2026-11-09_talk", ["2026-11-09_talk.jpg", "2026-11-09_talk-credito.txt"], "MERGED", config
+    )
+
+    [request] = ntfy.requests
+    assert request.headers["Title"] == "Files arrived late: 2026-11-09_talk"
+    assert request.body.startswith(
+        "The pull request is merged, so these files stayed in the inbox: "
+        "2026-11-09_talk.jpg, 2026-11-09_talk-credito.txt."
+    )

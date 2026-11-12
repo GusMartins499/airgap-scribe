@@ -10,12 +10,20 @@ import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from airgap_scribe.cleanup import pull_request_state
 from airgap_scribe.config import Config, write_container_config
+from airgap_scribe.credit import assemble, attachment_files, looks_like_credit_note, write_credit
 from airgap_scribe.draft import write_draft
 from airgap_scribe.naming import MeetingFile
-from airgap_scribe.notify import notify_failure, notify_resumed, notify_success
-from airgap_scribe.publish import publish
+from airgap_scribe.notify import (
+    notify_failure,
+    notify_late_attachments,
+    notify_resumed,
+    notify_success,
+)
+from airgap_scribe.publish import publish, publish_attachments
 from airgap_scribe.queue import Queue
 from airgap_scribe.verify import Alert
 from airgap_scribe.workdir import ALERTS, CONTAINER_CONFIG, DRAFT, TRANSCRIPT_ANON, TRANSCRIPT_RAW
@@ -29,6 +37,7 @@ TRY_INPUT_DIR = "input"
 STALL_SECONDS = 30 * 60
 POLL_SECONDS = 5
 REMOVE_TIMEOUT_SECONDS = 60
+OPEN = "OPEN"
 
 _INVALID_NAME_CHARACTERS = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -71,11 +80,15 @@ def run_one(meeting: MeetingFile, config: Config) -> None:
     stage = "prepare"
     try:
         work_dir = queue.work_dir(claimed)
+        ensure_transcript_is_not_a_credit_note(claimed)
         run_prepare(claimed, queue.processing, work_dir, config)
         stage = "draft"
         write_draft(work_dir, claimed, config)
         stage = "verify"
         alerts = run_verify(work_dir, config)
+        stage = "credit"
+        queue.move_attachments(claimed.stem, queue.inbox, queue.processing)
+        write_credit(work_dir, claimed.stem, queue.processing)
         stage = "publish"
         publication = publish(work_dir, claimed, alerts, config)
         stage = "notify"
@@ -114,6 +127,8 @@ def scan(config: Config) -> None:
             item = remaining[0]
             attempted.add(item.stem)
             _run_and_collect(item, config, failed)
+        for stem in queue.late_attachments():
+            _attach_late(queue, stem, config, failed)
     if failed:
         raise PipelineError(f"{len(failed)} recording(s) failed: {', '.join(failed)}")
 
@@ -144,6 +159,45 @@ def _run_and_collect(item: MeetingFile, config: Config, failed: list[str]) -> No
         run_one(item, config)
     except StageFailedError as error:
         failed.append(f"{error.stem} ({error.stage})")
+
+
+def ensure_transcript_is_not_a_credit_note(meeting: MeetingFile) -> None:
+    if meeting.transcript is None:
+        return
+    if looks_like_credit_note(meeting.transcript.read_text(encoding="utf-8-sig")):
+        raise PipelineError(
+            f"{meeting.transcript.name} looks like a credit note (it starts with 'Nome:'); "
+            f"rename it to {meeting.stem}-credito.txt"
+        )
+
+
+def _attach_late(queue: Queue, stem: str, config: Config, failed: list[str]) -> None:
+    stage = "attach"
+    try:
+        record = queue.done_record(stem)
+        state = pull_request_state(record["pr_url"])
+        if state != OPEN:
+            stage = "notify"
+            _notify_stuck_attachments(queue, stem, record, state, config)
+            return
+        queue.move_attachments(stem, queue.inbox, queue.done)
+        assembly = assemble(stem, queue.done)
+        publish_attachments(stem, record["branch"], record["pr_url"], assembly, config)
+    except Exception as error:
+        _notify_failure_safely(stem, stage, type(error).__name__, config)
+        failed.append(f"{stem} ({stage})")
+
+
+def _notify_stuck_attachments(
+    queue: Queue, stem: str, record: dict[str, Any], state: str, config: Config
+) -> None:
+    notified = set(record.get("late_notified", []))
+    names = [path.name for path in attachment_files(queue.inbox, stem)]
+    new = [name for name in names if name not in notified]
+    if not new:
+        return
+    notify_late_attachments(stem, new, state, config)
+    queue.update_done_record(stem, {**record, "late_notified": sorted(notified | set(new))})
 
 
 def try_one(audio: Path, kind: str, work_dir: Path, config: Config) -> TryResult:

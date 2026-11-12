@@ -8,11 +8,13 @@ from pathlib import Path
 import pytest
 from host_config import make_config, make_meeting, prepend_path, write_executable
 
+from airgap_scribe.credit import Assembly, assemble, write_credit
 from airgap_scribe.publish import (
     PublishError,
     branch_slug,
     preview_url,
     publish,
+    publish_attachments,
     pull_request_body,
 )
 from airgap_scribe.verify import Alert
@@ -318,3 +320,132 @@ def test_pull_request_body_without_alerts_has_no_table() -> None:
 
     assert "Name-check alerts: 0" in body
     assert "| Line |" not in body
+
+
+STEM = "2026-11-09_talk"
+BRANCH = f"draft/{STEM}"
+POST = f"src/content/posts/{STEM}.md"
+PHOTO = b"\xff\xd8\xff\xfe\x00\x06GPS!\xff\xda\x00\x02\x12\xff\xd9"
+STRIPPED_PHOTO = b"\xff\xd8\xff\xda\x00\x02\x12\xff\xd9"
+NOTE = "Nome: Fulano de Tal\nInstagram: @fulano\nFoto: Pessoas reunidas\n"
+
+
+def attachments(directory: Path, note: str | None = NOTE, photo: bool = True) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    if note is not None:
+        (directory / f"{STEM}-credito.txt").write_text(note, encoding="utf-8")
+    if photo:
+        (directory / f"{STEM}.jpg").write_bytes(PHOTO)
+    return directory
+
+
+def test_publish_commits_the_photo_next_to_the_post_and_lists_the_credit(
+    tmp_path: Path, origin: Path, checkout: Path, work_dir: Path, fake_gh: FakeGh
+) -> None:
+    write_credit(work_dir, STEM, attachments(tmp_path / "processing"))
+    config = make_config(tmp_path, repo_dir=checkout)
+
+    publish(work_dir, make_meeting(tmp_path / "a.m4a"), [], config)
+
+    files = git("ls-tree", "--name-only", BRANCH, "src/content/posts/", cwd=origin).split()
+    assert files == [f"src/content/posts/{STEM}.jpg", POST]
+    photo = subprocess.run(
+        ["git", "show", f"{BRANCH}:src/content/posts/{STEM}.jpg"],
+        cwd=origin,
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert photo == STRIPPED_PHOTO
+    post = git("show", f"{BRANCH}:{POST}", cwd=origin)
+    assert '  name: "Fulano de Tal"\n' in post
+    body = fake_gh.calls()[-1]["stdin"]
+    assert "Credit and photo:\n\n- Credit: Fulano de Tal (@fulano).\n" in body
+
+
+def test_publish_without_attachments_says_what_is_missing(
+    tmp_path: Path, origin: Path, checkout: Path, work_dir: Path, fake_gh: FakeGh
+) -> None:
+    write_credit(work_dir, STEM, tmp_path / "processing")
+    config = make_config(tmp_path, repo_dir=checkout)
+
+    publish(work_dir, make_meeting(tmp_path / "a.m4a"), [], config)
+
+    assert git("ls-tree", "--name-only", BRANCH, "src/content/posts/", cwd=origin).split() == [POST]
+    body = fake_gh.calls()[-1]["stdin"]
+    assert f"- No credit note yet: send `{STEM}-credito.txt`" in body
+    assert f"- No meeting photo yet: send `{STEM}.jpg`." in body
+
+
+def test_pull_request_body_without_credit_summary_has_no_credit_section() -> None:
+    assert "Credit and photo" not in pull_request_body(STEM, [])
+
+
+def published_draft(tmp_path: Path, checkout: Path, work_dir: Path) -> None:
+    write_credit(work_dir, STEM, tmp_path / "nothing")
+    publish(
+        work_dir, make_meeting(tmp_path / "a.m4a"), [], make_config(tmp_path, repo_dir=checkout)
+    )
+    reviewer = tmp_path / "reviewer"
+    git("clone", "--quiet", "--branch", BRANCH, str(tmp_path / "origin.git"), str(reviewer))
+    post = reviewer / POST
+    post.write_text(post.read_text(encoding="utf-8").replace("Body.", "Edited body."), "utf-8")
+    git("commit", "--quiet", "-am", "docs: review", cwd=reviewer)
+    git("push", "--quiet", "origin", BRANCH, cwd=reviewer)
+
+
+def test_publish_attachments_commits_on_top_of_the_reviewed_branch_and_comments(
+    tmp_path: Path, origin: Path, checkout: Path, work_dir: Path, fake_gh: FakeGh
+) -> None:
+    published_draft(tmp_path, checkout, work_dir)
+    assembly = assemble(STEM, attachments(tmp_path / "done"))
+    config = make_config(tmp_path, repo_dir=checkout)
+
+    committed = publish_attachments(STEM, BRANCH, NEW_PR_URL, assembly, config)
+
+    assert committed
+    log = git("log", "--format=%s", BRANCH, cwd=origin).splitlines()
+    assert log[:2] == [f"feat(content): add credit and photo for {STEM}", "docs: review"]
+    post = git("show", f"{BRANCH}:{POST}", cwd=origin)
+    assert "Edited body." in post
+    assert f'photo: "./{STEM}.jpg"\nphotoAlt: "Pessoas reunidas"\n---' in post
+    comment = fake_gh.calls()[-1]
+    assert comment["args"][:3] == ["pr", "comment", NEW_PR_URL]
+    assert "- Credit: Fulano de Tal (@fulano)." in comment["stdin"]
+    assert worktrees(checkout) == [checkout]
+
+
+def test_publish_attachments_only_comments_when_nothing_changes(
+    tmp_path: Path, origin: Path, checkout: Path, work_dir: Path, fake_gh: FakeGh
+) -> None:
+    published_draft(tmp_path, checkout, work_dir)
+    before = git("rev-parse", BRANCH, cwd=origin)
+    assembly = Assembly(keys=(), front_matter=(), photo_name=None, photo_data=None, summary=("x",))
+
+    committed = publish_attachments(
+        STEM, BRANCH, NEW_PR_URL, assembly, make_config(tmp_path, repo_dir=checkout)
+    )
+
+    assert not committed
+    assert git("rev-parse", BRANCH, cwd=origin) == before
+    assert fake_gh.calls()[-1]["stdin"].endswith("Nothing changed in the draft.\n")
+
+
+def test_publish_attachments_requires_the_post_on_the_branch(
+    tmp_path: Path, origin: Path, checkout: Path, fake_gh: FakeGh
+) -> None:
+    git("push", "--quiet", str(origin), f"origin/main:refs/heads/{BRANCH}", cwd=checkout)
+    assembly = Assembly(keys=(), front_matter=(), photo_name=None, photo_data=None, summary=())
+
+    with pytest.raises(PublishError, match="is not on draft/"):
+        publish_attachments(
+            STEM, BRANCH, NEW_PR_URL, assembly, make_config(tmp_path, repo_dir=checkout)
+        )
+    assert worktrees(checkout) == [checkout]
+
+
+def test_publish_attachments_requires_a_publish_section(tmp_path: Path) -> None:
+    assembly = Assembly(keys=(), front_matter=(), photo_name=None, photo_data=None, summary=())
+    config = replace(make_config(tmp_path), publish=None)
+
+    with pytest.raises(PublishError, match=r"\[publish\]"):
+        publish_attachments(STEM, BRANCH, NEW_PR_URL, assembly, config)

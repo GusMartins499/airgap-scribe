@@ -1,12 +1,14 @@
 import json
+import os
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from host_config import make_config, prepend_path, write_executable
 
-from airgap_scribe.cleanup import CleanupError, cleanup
+from airgap_scribe.cleanup import ORPHAN_SECONDS, CleanupError, cleanup, remove_orphan_attachments
 from airgap_scribe.config import Config
 from airgap_scribe.queue import Queue
 
@@ -23,7 +25,9 @@ def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         tmp_path / "gh-bin" / "gh",
         f"""#!{sys.executable}
 import json
+import os
 import sys
+import time
 
 args = sys.argv[1:]
 with open({str(log)!r}, "a", encoding="utf-8") as handle:
@@ -54,6 +58,8 @@ def archive(config: Config, stem: str, pr_url: str | None) -> Queue:
     queue = Queue(config.paths.data_dir)
     (queue.done / f"{stem}.m4a").write_bytes(b"synthetic audio")
     (queue.done / f"{stem}.txt").write_text("Speaker 1: hi\n")
+    (queue.done / f"{stem}-credito.txt").write_text("Nome: Fulano\n")
+    (queue.done / f"{stem}.jpg").write_bytes(b"photo")
     work_dir = queue.work / stem
     work_dir.mkdir(parents=True)
     (work_dir / "transcript.raw.txt").write_text("raw\n")
@@ -162,3 +168,40 @@ def test_cleanup_requires_a_data_dir(tmp_path: Path) -> None:
 
     with pytest.raises(CleanupError, match="data directory"):
         cleanup(config)
+
+
+def aged(path: Path, seconds: float) -> Path:
+    path.write_bytes(b"attachment")
+    stamp = time.time() - seconds
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def test_cleanup_removes_attachments_left_in_the_inbox_for_a_week(
+    config: Config, fake_gh: Path
+) -> None:
+    queue = Queue(config.paths.data_dir)
+    aged(queue.inbox / "2026-11-01_talk-credito.txt", ORPHAN_SECONDS + 60)
+    aged(queue.inbox / "2026-11-01_talk.heic", ORPHAN_SECONDS + 60)
+    aged(queue.inbox / "2026-11-02_talk.jpg", ORPHAN_SECONDS - 60)
+    aged(queue.inbox / "2026-11-03_talk.jpg", ORPHAN_SECONDS + 60)
+    (queue.inbox / "2026-11-03_talk.m4a").write_bytes(b"audio")
+    aged(queue.inbox / "2026-11-04_talk.png", ORPHAN_SECONDS + 60)
+    (queue.processing / "2026-11-04_talk.M4A").write_bytes(b"audio")
+    aged(queue.inbox / "notes.jpg", ORPHAN_SECONDS + 60)
+    (queue.inbox / "2026-11-05_talk.jpg").mkdir()
+
+    assert cleanup(config) == ["2026-11-01_talk-credito.txt", "2026-11-01_talk.heic"]
+
+    assert sorted(path.name for path in queue.inbox.iterdir()) == [
+        "2026-11-02_talk.jpg",
+        "2026-11-03_talk.jpg",
+        "2026-11-03_talk.m4a",
+        "2026-11-04_talk.png",
+        "2026-11-05_talk.jpg",
+        "notes.jpg",
+    ]
+
+
+def test_remove_orphan_attachments_without_an_inbox(tmp_path: Path) -> None:
+    assert remove_orphan_attachments(Queue(tmp_path / "missing")) == []
